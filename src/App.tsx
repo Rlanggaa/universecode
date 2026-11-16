@@ -104,6 +104,7 @@ import {
   RelationshipStudioView,
   TAG_TAB_METADATA
 } from './components/RelationshipStudioView';
+import { PaginatedStoryStudioView } from './components/PaginatedStoryStudioView';
 import {
   auth,
   onAuthStateChanged,
@@ -166,6 +167,7 @@ interface GlobalWorkspaceSnapshot {
   storySynopsis: string;
   storyText: string;
   storyThumbnail: string;
+  storyPagesJson?: string;
   relationships: EntityRelationship[];
   maps: WorldMap[];
   timelineEvents: TimelineEvent[];
@@ -365,15 +367,15 @@ export default function App() {
   const [showAdvancedWorldForm, setShowAdvancedWorldForm] = useState<boolean>(false);
   const worldThumbInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Story UI State (Matching 4_efc095fa.png: Sinopsis & Full Story)
+  // Story UI State (Paginated 1-Page Story Sheets & Inline Images)
   const [activeStoryId, setActiveStoryId] = useState<string>('');
   const [storySynopsis, setStorySynopsis] = useState<string>('');
   const [storyText, setStoryText] = useState<string>('');
   const [storyThumbnail, setStoryThumbnail] = useState<string>('');
+  const [storyPagesJson, setStoryPagesJson] = useState<string>('');
   const [storyTitle, setStoryTitle] = useState<string>('');
   const [storySavedToast, setStorySavedToast] = useState<boolean>(false);
   const [showStoryAdvancedWiki, setShowStoryAdvancedWiki] = useState<boolean>(false);
-  const storyThumbInputRef = useRef<HTMLInputElement | null>(null);
 
   // ============================================================================
   // GLOBAL UNDO (Ctrl+Z) & REDO (Ctrl+Shift+Z) + UNIVERSAL AUTO-SAVE ENGINE
@@ -485,6 +487,7 @@ export default function App() {
       storySynopsis,
       storyText,
       storyThumbnail,
+      storyPagesJson,
       relationships,
       maps,
       timelineEvents,
@@ -505,6 +508,7 @@ export default function App() {
       storySynopsis,
       storyText,
       storyThumbnail,
+      storyPagesJson,
       relationships,
       maps,
       timelineEvents,
@@ -556,6 +560,7 @@ export default function App() {
     storySynopsis,
     storyText,
     storyThumbnail,
+    storyPagesJson,
     relationships,
     maps,
     timelineEvents,
@@ -578,6 +583,7 @@ export default function App() {
     setStorySynopsis(snap.storySynopsis);
     setStoryText(snap.storyText);
     setStoryThumbnail(snap.storyThumbnail);
+    setStoryPagesJson(snap.storyPagesJson || '');
     setRelationships(snap.relationships);
     setMaps(snap.maps);
     setTimelineEvents(snap.timelineEvents);
@@ -621,6 +627,7 @@ export default function App() {
       storySynopsis,
       storyText,
       storyThumbnail,
+      storyPagesJson,
       relationships,
       maps,
       timelineEvents,
@@ -652,6 +659,7 @@ export default function App() {
       storySynopsis,
       storyText,
       storyThumbnail,
+      storyPagesJson,
       relationships,
       maps,
       timelineEvents,
@@ -816,45 +824,10 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // Thumbnail Upload Handler for Story View (Standardized to 1920x1080 px 16:9 Template)
-  const handleStoryThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        const rawDataUrl = reader.result;
-        const img = new Image();
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = 1920;
-          canvas.height = 1080;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            setStoryThumbnail(rawDataUrl);
-            return;
-          }
-          ctx.clearRect(0, 0, 1920, 1080);
-          const scale = Math.max(1920 / img.width, 1080 / img.height);
-          const drawW = img.width * scale;
-          const drawH = img.height * scale;
-          const drawX = (1920 - drawW) / 2;
-          const drawY = (1080 - drawH) / 2;
-          ctx.drawImage(img, drawX, drawY, drawW, drawH);
-          setStoryThumbnail(canvas.toDataURL('image/jpeg', 0.92));
-        };
-        img.onerror = () => setStoryThumbnail(rawDataUrl);
-        img.src = rawDataUrl;
-      }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
-  };
-
-  // Save Story Entry Handler (Saves Sinopsis & Full Story into local-first Articles + Recent Activity)
+  // Save Story Entry Handler (Saves Paginated Story Sheets & Inline Images into local-first Articles)
   const handleSaveStoryEntry = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!storySynopsis.trim() && !storyText.trim() && !storyTitle.trim()) return;
+    if (!storySynopsis.trim() && !storyText.trim() && !storyTitle.trim() && !storyPagesJson.trim()) return;
 
     const targetWorld = ensureActiveWorldForQuickCreate();
     const firstLine = (storySynopsis.trim() || storyText.trim())
@@ -885,19 +858,20 @@ export default function App() {
       templateValues: {
         Sinopsis: storySynopsis,
         FullStory: storyText,
+        StoryPagesJson: storyPagesJson,
         AccessControl: 'Admin & Authorized Only',
         Thumbnail: storyThumbnail ? 'Attached' : 'None'
       },
       status: 'published',
       visibility: 'private',
       linkedEntityIds: [],
-      galleryCaptions: storyThumbnail ? [resolvedTitle] : [],
+      galleryCaptions: [],
       versions: [
         {
           id: `v-${Date.now()}`,
           timestamp: nowStamp,
           author: currentUser?.displayName || 'Creator',
-          note: 'Saved from Story Studio',
+          note: 'Saved from Paginated Story Studio',
           contentSnapshot: storyText
         }
       ],
@@ -914,28 +888,8 @@ export default function App() {
     setActiveStoryId(storyId);
     setSelectedArticleId(storyId);
 
-    if (storyThumbnail) {
-      setDigitalAssets((prev) =>
-        prev.some((ast) => ast.title === `${resolvedTitle} — Story Thumbnail`)
-          ? prev
-          : [
-              {
-                id: `ast-story-${Date.now()}`,
-                worldId: targetWorld.id,
-                title: `${resolvedTitle} — Story Thumbnail`,
-                category: 'Reference',
-                dataUrl: storyThumbnail,
-                tags: ['story', 'lore'],
-                sizeKb: 95,
-                createdAt: nowStamp
-              },
-              ...prev
-            ]
-      );
-    }
-
-    recordOpenedItem(storyId, resolvedTitle, 'Article', 'articles', storyThumbnail);
-    recordEditedItem(storyId, resolvedTitle, 'Article', 'articles', storyThumbnail);
+    recordOpenedItem(storyId, resolvedTitle, 'Article', 'articles');
+    recordEditedItem(storyId, resolvedTitle, 'Article', 'articles');
 
     setStorySavedToast(true);
     setTimeout(() => setStorySavedToast(false), 2500);
@@ -961,11 +915,11 @@ export default function App() {
     }
   };
 
-  // Automatic real-time save for Story View (Sinopsis, Full Story, Title, Thumbnail)
+  // Automatic real-time save for Paginated Story View
   useEffect(() => {
     if (activeNav !== 'articles' || showStoryAdvancedWiki || isRestoringHistoryRef.current) return;
     const hasContent = Boolean(
-      storyTitle.trim() || storySynopsis.trim() || storyText.trim() || storyThumbnail
+      storyTitle.trim() || storySynopsis.trim() || storyText.trim() || storyPagesJson.trim()
     );
     if (!activeStoryId && !hasContent) return;
 
@@ -975,7 +929,7 @@ export default function App() {
       existing.title === (storyTitle.trim() || existing.title) &&
       String(existing.templateValues?.Sinopsis || '') === storySynopsis &&
       (existing.content || '') === storyText &&
-      (existing.secretNotes || '') === (storyThumbnail || '')
+      String(existing.templateValues?.StoryPagesJson || '') === storyPagesJson
     ) {
       return;
     }
@@ -1014,19 +968,20 @@ export default function App() {
         templateValues: {
           Sinopsis: storySynopsis,
           FullStory: storyText,
+          StoryPagesJson: storyPagesJson,
           AccessControl: 'Admin & Authorized Only',
-          Thumbnail: storyThumbnail ? 'Attached' : 'None'
+          Thumbnail: 'None'
         },
         status: 'published',
         visibility: 'private',
         linkedEntityIds: [],
-        galleryCaptions: storyThumbnail ? [resolvedTitle] : [],
+        galleryCaptions: [],
         versions: [
           {
             id: `v-${Date.now()}`,
             timestamp: nowStamp,
             author: currentUser?.displayName || 'Creator',
-            note: 'Auto-saved from Story Studio',
+            note: 'Auto-saved from Paginated Story Studio',
             contentSnapshot: storyText
           }
         ],
@@ -1054,7 +1009,7 @@ export default function App() {
     storyTitle,
     storySynopsis,
     storyText,
-    storyThumbnail,
+    storyPagesJson,
     activeStoryId,
     articles
   ]);
@@ -1484,9 +1439,8 @@ export default function App() {
               setStoryTitle(a.title);
               setStorySynopsis(String(a.templateValues?.Sinopsis || a.summary || ''));
               setStoryText(a.content || '');
-              setStoryThumbnail(
-                a.secretNotes?.startsWith('data:image') ? a.secretNotes : ''
-              );
+              setStoryPagesJson(String(a.templateValues?.StoryPagesJson || ''));
+              setStoryThumbnail('');
             }
             if (isWorkspaceFullscreen) setOpenInFullscreen(true);
             recordOpenedItem(
@@ -2644,352 +2598,53 @@ export default function App() {
           )}
 
           {/* ================================================================ */}
-          {/* VIEW 3A: STORY UI (Soft Periwinkle & Crisp White Palette)        */}
+          {/* VIEW 3A: PAGINATED STORY SHEET STUDIO (1-Page Limit & MS Word    */}
+          {/*          Inline Image Insertion)                                 */}
           {/* ================================================================ */}
           {activeNav === 'articles' && !showStoryAdvancedWiki && (
-            <div
-              className={`relative -mx-6 sm:-mx-8 -my-6 sm:-my-8 bg-[#f2f4f9] flex flex-col overflow-y-auto ${
-                isStoryFullscreen
-                  ? 'h-screen max-h-screen'
-                  : 'h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)]'
-              }`}
-            >
-              <input
-                ref={storyThumbInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleStoryThumbnailUpload}
-                className="hidden"
-              />
-
-              {/* Sticky Top Action Bar for Story: In-Page Search (when Fullscreen) & Fullscreen Toggle */}
-              <div className="sticky top-0 z-30 bg-[#f2f4f9]/95 backdrop-blur-md px-6 sm:px-10 pt-5 sm:pt-6 pb-3">
-                <div
-                  className={`mx-auto flex flex-wrap items-center justify-between gap-2.5 transition-all duration-300 ${
-                    isStoryFullscreen ? 'max-w-7xl' : 'max-w-5xl'
-                  }`}
-                >
-                  <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[220px]">
-                    {returnToUniverseLineProp && (
-                      <button
-                        type="button"
-                        onClick={returnToUniverseLineProp.onReturn}
-                        className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white hover:bg-[#e6ecf7] text-[#181b26] border border-[#6d7696] text-xs font-serif font-semibold transition shadow-xs shrink-0 cursor-pointer group"
-                        title={`Kembali ke halaman ${returnToUniverseLineProp.label}`}
-                      >
-                        <ArrowLeft className="w-3.5 h-3.5 text-[#6d7696] group-hover:-translate-x-0.5 transition-transform" />
-                        {returnToUniverseLineProp.iconSrc && (
-                          <img
-                            src={returnToUniverseLineProp.iconSrc}
-                            alt=""
-                            className="w-4 h-4 object-contain shrink-0"
-                          />
-                        )}
-                        <span>Kembali ke {returnToUniverseLineProp.label}</span>
-                      </button>
-                    )}
-                    {isStoryFullscreen && (
-                      <div className="flex-1 min-w-[200px] max-w-md">{inPageSearchElement}</div>
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = !isStoryFullscreen;
-                      setIsStoryFullscreen(next);
-                      setIsWorkspaceFullscreen(next);
-                    }}
-                    className={`flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-serif font-semibold transition shadow-xs ${
-                      isStoryFullscreen
-                        ? 'bg-[#6d7696] text-white border-[#879fd0] shadow-[0_4px_14px_rgba(109,118,150,0.35)]'
-                        : 'bg-white hover:bg-[#e8eef9] text-[#181b26] border-[#494a52]'
-                    }`}
-                  >
-                    {isStoryFullscreen ? (
-                      <>
-                        <Minimize2 className="w-3.5 h-3.5" />
-                        <span>Keluar Fullscreen</span>
-                      </>
-                    ) : (
-                      <>
-                        <Maximize2 className="w-3.5 h-3.5 text-[#6d7696]" />
-                        <span>Fullscreen</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* Stationary (Sticky) Top 1920x1080 px (16:9) Dashed Thumbnail Dropzone */}
-              {(!isStoryFullscreen || storyThumbnail) && (
-                <div
-                  className={`sticky top-[56px] z-10 w-full mx-auto px-6 sm:px-10 pt-1 transition-all duration-300 ${
-                    isStoryFullscreen ? 'max-w-7xl' : 'max-w-5xl'
-                  }`}
-                >
-                  <div
-                    onClick={() => {
-                      if (!isStoryFullscreen) storyThumbInputRef.current?.click();
-                    }}
-                    style={storyThumbnail ? { borderStyle: 'none' } : undefined}
-                    className={`w-full aspect-[16/9] max-h-[380px] sm:max-h-[440px] mx-auto rounded-[28px] bg-gradient-to-br from-[#879fd0] via-[#7d95c7] to-[#738bbd] shadow-[0_12px_32px_rgba(115,139,189,0.28)] transition-colors flex flex-col items-center justify-center relative overflow-hidden group ${
-                      isStoryFullscreen ? 'cursor-default' : 'cursor-pointer'
-                    } ${
-                      storyThumbnail
-                        ? 'border border-[#cbd3e6]'
-                        : 'border-2 border-dashed border-white/80 hover:border-white'
-                    }`}
-                  >
-                    {storyThumbnail ? (
-                      <>
-                        <img
-                          src={storyThumbnail}
-                          alt="Story Thumbnail (1920x1080)"
-                          className="w-full h-full object-cover"
-                        />
-                        {!isStoryFullscreen && (
-                          <div className="absolute inset-0 bg-[#181b26]/55 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                            <span className="px-4 py-1.5 rounded-full bg-[#6d7696] border border-white/80 text-xs font-semibold text-white">
-                              Change Thumbnail (1920×1080 px)
-                            </span>
-                            <button
-                              type="button"
-                              onClick={(ev) => {
-                                ev.stopPropagation();
-                                setStoryThumbnail('');
-                              }}
-                              className="px-3.5 py-1.5 rounded-full bg-[#494a52] border border-white/60 text-xs font-semibold text-white"
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <div className="text-center space-y-2.5 select-none">
-                        <Plus className="w-12 h-12 text-white mx-auto stroke-[2.5] group-hover:scale-105 transition-transform" />
-                        <div className="text-base sm:text-lg font-bold text-white tracking-wide">
-                          Add Thumbnail (Opsional)
-                        </div>
-                        <div className="text-xs font-mono text-white/90">
-                          1920 × 1080 px
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
+            <PaginatedStoryStudioView
+              storyTitle={storyTitle}
+              setStoryTitle={setStoryTitle}
+              storySynopsis={storySynopsis}
+              setStorySynopsis={setStorySynopsis}
+              storyText={storyText}
+              setStoryText={setStoryText}
+              storyPagesJson={storyPagesJson}
+              setStoryPagesJson={setStoryPagesJson}
+              activeStoryId={activeStoryId}
+              storySavedToast={storySavedToast}
+              isStoryFullscreen={isStoryFullscreen}
+              onToggleFullscreen={() => {
+                const next = !isStoryFullscreen;
+                setIsStoryFullscreen(next);
+                setIsWorkspaceFullscreen(next);
+              }}
+              onSaveStory={handleSaveStoryEntry}
+              onStartNewStory={() => {
+                setActiveStoryId('');
+                setStoryTitle('');
+                setStorySynopsis('');
+                setStoryText('');
+                setStoryPagesJson('');
+                setStoryThumbnail('');
+              }}
+              onOpenAdvancedWiki={() => setShowStoryAdvancedWiki(true)}
+              totalArticlesCount={articles.length}
+              savedStoryArticles={articles.filter(
+                (a) => a.category === 'Stories' || a.tags.includes('Story')
               )}
-
-              {/* Scrolling Story / Article Card: Rises Upward Over the Stationary Thumbnail Until Covered */}
-              <form
-                onSubmit={handleSaveStoryEntry}
-                className={`relative z-20 w-full mx-auto px-6 sm:px-10 mt-7 pb-[42vh] transition-all duration-300 ${
-                  isStoryFullscreen ? 'max-w-7xl' : 'max-w-5xl'
-                }`}
-              >
-                <div className="bg-[#f2f4f9] rounded-t-[28px] space-y-6">
-                  {isStoryFullscreen ? (
-                    <div className="rounded-[28px] bg-white border border-[#dce3f2] px-8 sm:px-12 py-8 min-h-[540px] flex flex-col justify-between shadow-[0_-18px_40px_rgba(242,244,249,0.98),0_12px_32px_rgba(115,139,189,0.18)] space-y-6 select-text font-serif">
-                      <div className="space-y-6">
-                        {storyTitle.trim() && (
-                          <div className="border-b border-[#e4eaf6] pb-4">
-                            <h1 className="text-2xl sm:text-3xl font-bold text-[#181b26] tracking-wide">
-                              {storyTitle.trim()}
-                            </h1>
-                          </div>
-                        )}
-
-                        <div className="space-y-3">
-                          <h2 className="text-xl sm:text-2xl font-bold text-[#181b26]">
-                            Sinopsis
-                          </h2>
-                          <p className="text-lg sm:text-xl text-[#2c3142] leading-relaxed whitespace-pre-line">
-                            {storySynopsis.trim() || 'Belum ada sinopsis cerita.'}
-                          </p>
-                        </div>
-
-                        <div className="space-y-3 pt-4 border-t border-[#e4eaf6]">
-                          <h2 className="text-xl sm:text-2xl font-bold text-[#181b26]">
-                            Full Story
-                          </h2>
-                          <p className="text-lg sm:text-xl text-[#2c3142] leading-relaxed whitespace-pre-line">
-                            {storyText.trim() || 'Belum ada teks cerita lengkap.'}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="rounded-[28px] bg-white border border-[#dce3f2] px-8 sm:px-12 py-8 min-h-[500px] flex flex-col justify-between shadow-[0_-18px_40px_rgba(242,244,249,0.98),0_12px_32px_rgba(115,139,189,0.18)] space-y-6">
-                        {/* Section 1: Sinopsis */}
-                        <div className="space-y-3">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <h2 className="text-xl sm:text-2xl font-serif font-bold text-[#181b26]">
-                              Sinopsis
-                            </h2>
-                            <input
-                              type="text"
-                              value={storyTitle}
-                              onChange={(e) => setStoryTitle(e.target.value)}
-                              placeholder="Judul Cerita (opsional)..."
-                              className="bg-transparent font-serif text-xs text-[#6d7696] placeholder:text-[#848da8] focus:outline-none border-b border-transparent focus:border-[#879fd0] text-right"
-                            />
-                          </div>
-                          <textarea
-                            rows={3}
-                            value={storySynopsis}
-                            onChange={(e) => setStorySynopsis(e.target.value)}
-                            placeholder="(deskripsi)"
-                            className="w-full bg-transparent font-serif text-lg sm:text-xl text-[#181b26] placeholder:text-[#848da8] leading-relaxed resize-none focus:outline-none"
-                          />
-                        </div>
-
-                        {/* Section 2: Full Story */}
-                        <div className="space-y-3 flex-1 flex flex-col pt-2">
-                          <h2 className="text-xl sm:text-2xl font-serif font-bold text-[#181b26]">
-                            Full Story
-                          </h2>
-                          {!storyText && (
-                            <div className="font-serif text-lg sm:text-xl pointer-events-none select-none -mb-8">
-                              <span className="text-[#52586e]">(deskripsi) </span>
-                              <span className="text-[#848da8]">
-                                (hanya admin dan yang diizinkan yang dapat mengakses)
-                              </span>
-                            </div>
-                          )}
-                          <textarea
-                            rows={10}
-                            value={storyText}
-                            onChange={(e) => setStoryText(e.target.value)}
-                            placeholder=""
-                            className="w-full flex-1 bg-transparent font-serif text-lg sm:text-xl text-[#181b26] leading-relaxed resize-none focus:outline-none relative z-10"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Action Bar & Saved Stories Switcher */}
-                      <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
-                        <div className="flex flex-wrap items-center gap-3 text-xs text-[#52586e]">
-                          <span className="font-mono tabular-nums">
-                            {`${storySynopsis} ${storyText}`.trim()
-                              ? `${storySynopsis} ${storyText}`.trim().split(/\s+/).filter(Boolean).length
-                              : 0}{' '}
-                            words
-                          </span>
-                          {storySavedToast && (
-                            <span className="inline-flex items-center gap-1 text-[#6d7696] font-semibold">
-                              <Check className="w-3.5 h-3.5" />
-                              Story tersimpan di Workspace
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => setShowStoryAdvancedWiki(true)}
-                            className="text-[#6d7696] hover:text-[#181b26] underline ml-1 font-semibold"
-                          >
-                            Buka Daftar Artikel &amp; Tag ({articles.length})
-                          </button>
-                        </div>
-
-                        <div className="flex items-center gap-2.5">
-                          {(storySynopsis || storyText || storyTitle || storyThumbnail || activeStoryId) && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setActiveStoryId('');
-                                setStoryTitle('');
-                                setStorySynopsis('');
-                                setStoryText('');
-                                setStoryThumbnail('');
-                              }}
-                              className="px-4 py-2 rounded-full border border-[#494a52] bg-white text-xs font-semibold text-[#181b26] hover:bg-[#e8eef9] transition-colors"
-                            >
-                              + Cerita Baru
-                            </button>
-                          )}
-                          <button
-                            type="submit"
-                            className="px-6 py-2 rounded-full bg-[#6d7696] hover:bg-[#5d6685] text-white font-serif font-semibold text-xs border border-[#879fd0] shadow-[0_4px_14px_rgba(109,118,150,0.35)] transition-all"
-                          >
-                            Simpan Story
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Saved Stories List */}
-                      {articles.filter((a) => a.category === 'Stories' || a.tags.includes('Story'))
-                        .length > 0 && (
-                        <div className="pt-4 border-t border-[#d5dced] space-y-3">
-                          <div className="text-xs font-bold text-[#181b26]">
-                            Story Tersimpan di Workspace
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                            {articles
-                              .filter((a) => a.category === 'Stories' || a.tags.includes('Story'))
-                              .map((st) => (
-                                <button
-                                  key={st.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setActiveStoryId(st.id);
-                                    setStoryTitle(st.title);
-                                    setStorySynopsis(String(st.templateValues?.Sinopsis || st.summary || ''));
-                                    setStoryText(st.content);
-                                    setStoryThumbnail(
-                                      st.secretNotes?.startsWith('data:image') ? st.secretNotes : ''
-                                    );
-                                    recordOpenedItem(
-                                      st.id,
-                                      st.title,
-                                      'Article',
-                                      'articles',
-                                      st.secretNotes
-                                    );
-                                  }}
-                                  className={`text-left p-3.5 rounded-[22px] border transition-all flex items-center gap-3 ${
-                                    activeStoryId === st.id
-                                      ? 'bg-[#6d7696] text-white border-[#879fd0] shadow-md'
-                                      : 'bg-white text-[#181b26] border-[#dce3f2] hover:border-[#879fd0] shadow-xs'
-                                  }`}
-                                >
-                                  {st.secretNotes && st.secretNotes.startsWith('data:image') ? (
-                                    <img
-                                      src={st.secretNotes}
-                                      alt={st.title}
-                                      className="w-11 h-11 rounded-xl object-cover shrink-0 border border-[#879fd0]"
-                                    />
-                                  ) : (
-                                    <div className="w-11 h-11 rounded-xl bg-[#879fd0] border border-[#7792c4] flex items-center justify-center shrink-0">
-                                      <BookOpen className="w-4 h-4 text-white" />
-                                    </div>
-                                  )}
-                                  <div className="min-w-0">
-                                    <div
-                                      className={`text-xs font-bold truncate ${
-                                        activeStoryId === st.id ? 'text-white' : 'text-[#181b26]'
-                                      }`}
-                                    >
-                                      {st.title}
-                                    </div>
-                                    <div
-                                      className={`text-[11px] truncate mt-0.5 ${
-                                        activeStoryId === st.id ? 'text-white/85' : 'text-[#52586e]'
-                                      }`}
-                                    >
-                                      {st.summary || 'Sinopsis & Full Story'} · {st.wordCount}w
-                                    </div>
-                                  </div>
-                                </button>
-                              ))}
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              </form>
-            </div>
+              onSelectSavedStory={(st) => {
+                setActiveStoryId(st.id);
+                setStoryTitle(st.title);
+                setStorySynopsis(String(st.templateValues?.Sinopsis || st.summary || ''));
+                setStoryText(st.content || '');
+                setStoryPagesJson(String(st.templateValues?.StoryPagesJson || ''));
+                setStoryThumbnail('');
+                recordOpenedItem(st.id, st.title, 'Article', 'articles');
+              }}
+              inPageSearchNode={inPageSearchElement}
+              returnToUniverseLine={returnToUniverseLineProp}
+            />
           )}
 
           {/* ================================================================ */}
