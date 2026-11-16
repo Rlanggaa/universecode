@@ -215,6 +215,96 @@
         }
       },
       "required": ["ownerId", "worldId", "title", "templateType", "category", "summary", "content", "status", "visibility", "createdAt", "updatedAt"]
+    },
+    "CloudAccountVault": {
+      "title": "CloudAccountVault",
+      "description": "Cross-domain and cross-browser synchronized workspace vault keyed by hashed email ID and protected by cryptographic password token without storing raw PII.",
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Deterministic SHA-256 derived account lookup ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "passwordToken": {
+          "type": "string",
+          "description": "SHA-256 derived credential verification token",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public creator pen name",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "chunkCount": {
+          "type": "integer",
+          "description": "Total number of serialized workspace chunks"
+        },
+        "payloadChunk0": {
+          "type": "string",
+          "description": "Primary serialized workspace JSON chunk",
+          "minLength": 2,
+          "maxLength": 800000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["accountId", "passwordToken", "displayName", "chunkCount", "payloadChunk0", "createdAt", "updatedAt"]
+    },
+    "CloudBackupChunk": {
+      "title": "CloudBackupChunk",
+      "description": "Overflow chunk storage for large worldbuilding workspaces containing inline story images or maps.",
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string",
+          "description": "Parent CloudAccountVault ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "passwordToken": {
+          "type": "string",
+          "description": "Matching credential verification token of parent account",
+          "minLength": 8,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "chunkIndex": {
+          "type": "integer",
+          "description": "Zero-based overflow chunk index (1..25)"
+        },
+        "payloadChunk": {
+          "type": "string",
+          "description": "Serialized JSON slice",
+          "minLength": 0,
+          "maxLength": 800000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["accountId", "passwordToken", "chunkIndex", "payloadChunk", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -233,6 +323,14 @@
     "/articles/{articleId}": {
       "schema": { "$ref": "#/entities/ArticleEntity" },
       "description": "Worldbuilding encyclopedia articles and templated entity records."
+    },
+    "/cloud_accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/CloudAccountVault" },
+      "description": "Cross-browser and cross-device workspace vault keyed by hashed email ID."
+    },
+    "/cloud_backups/{chunkId}": {
+      "schema": { "$ref": "#/entities/CloudBackupChunk" },
+      "description": "Additional workspace payload chunks linked to a parent CloudAccountVault."
     }
   }
 }

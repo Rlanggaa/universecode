@@ -95,6 +95,31 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    // Validation Blueprint: CloudAccountVault (/cloud_accounts/{accountId})
+    function isValidCloudAccount(data) {
+      return data.keys().hasAll(['accountId', 'passwordToken', 'displayName', 'chunkCount', 'payloadChunk0', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['accountId', 'passwordToken', 'displayName', 'chunkCount', 'payloadChunk0', 'createdAt', 'updatedAt']) &&
+        data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128 && data.accountId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.passwordToken is string && data.passwordToken.size() >= 8 && data.passwordToken.size() <= 128 && data.passwordToken.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.chunkCount is int && data.chunkCount >= 1 && data.chunkCount <= 25 &&
+        data.payloadChunk0 is string && data.payloadChunk0.size() >= 2 && data.payloadChunk0.size() <= 800000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint: CloudBackupChunk (/cloud_backups/{chunkId})
+    function isValidCloudBackupChunk(data) {
+      return data.keys().hasAll(['accountId', 'passwordToken', 'chunkIndex', 'payloadChunk', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['accountId', 'passwordToken', 'chunkIndex', 'payloadChunk', 'createdAt', 'updatedAt']) &&
+        data.accountId is string && data.accountId.size() >= 1 && data.accountId.size() <= 128 && data.accountId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.passwordToken is string && data.passwordToken.size() >= 8 && data.passwordToken.size() <= 128 && data.passwordToken.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.chunkIndex is int && data.chunkIndex >= 1 && data.chunkIndex <= 25 &&
+        data.payloadChunk is string && data.payloadChunk.size() >= 0 && data.payloadChunk.size() <= 800000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     // Admins collection (read-only for self/admin, no client writes)
     match /admins/{adminId} {
       allow get: if isVerifiedUser() && isValidId(adminId) && request.auth.uid == adminId;
@@ -208,6 +233,48 @@ service cloud.firestore {
           )
         );
       allow delete: if isVerifiedUser() && isValidId(articleId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // Collection 5: /cloud_accounts/{accountId}
+    match /cloud_accounts/{accountId} {
+      allow get: if isValidId(accountId);
+      allow list: if false;
+      allow create: if isValidId(accountId) &&
+        isValidCloudAccount(incoming()) &&
+        incoming().accountId == accountId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(accountId) &&
+        isValidCloudAccount(incoming()) &&
+        incoming().accountId == existing().accountId &&
+        incoming().passwordToken == existing().passwordToken &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'chunkCount', 'payloadChunk0', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Collection 6: /cloud_backups/{chunkId}
+    match /cloud_backups/{chunkId} {
+      allow get: if isValidId(chunkId);
+      allow list: if false;
+      allow create: if isValidId(chunkId) &&
+        isValidCloudBackupChunk(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/cloud_accounts/$(incoming().accountId)) &&
+        get(/databases/$(database)/documents/cloud_accounts/$(incoming().accountId)).data.passwordToken == incoming().passwordToken;
+      allow update: if isValidId(chunkId) &&
+        isValidCloudBackupChunk(incoming()) &&
+        incoming().accountId == existing().accountId &&
+        incoming().passwordToken == existing().passwordToken &&
+        incoming().chunkIndex == existing().chunkIndex &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/cloud_accounts/$(existing().accountId)) &&
+        get(/databases/$(database)/documents/cloud_accounts/$(existing().accountId)).data.passwordToken == incoming().passwordToken &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['payloadChunk', 'updatedAt']);
+      allow delete: if false;
     }
   }
 }

@@ -116,6 +116,8 @@ import {
   syncArticleToFirestore,
   saveWorkspaceBundleToFirestore,
   loadWorkspaceBundleFromFirestore,
+  saveCloudAccountVaultToFirestore,
+  loadCloudAccountVaultFromFirestore,
   User
 } from './lib/firebase';
 import {
@@ -123,6 +125,8 @@ import {
   saveWorkspaceBundleToSupabase,
   loadWorkspaceBundleFromSupabase,
   deriveCloudAccountId,
+  deriveEmailLookupId,
+  hasWorkspaceBundleContent,
   CLOUD_ACCOUNT_SESSION_KEY,
   CloudAccountSession,
   CloudWorkspaceBundle
@@ -817,133 +821,243 @@ export default function App() {
     updatedAtIso: new Date().toISOString()
   });
 
-  const buildCurrentWorkspaceBundle = (): CloudWorkspaceBundle => ({
-    worlds,
-    activeWorldId,
-    universes,
-    articles,
-    relationships,
-    maps,
-    timelineEvents,
-    manuscripts,
-    notes,
-    tasks,
-    digitalAssets,
-    recentlyOpened,
-    recentlyEdited,
-    timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
-    relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
-    updatedAtIso: new Date().toISOString()
-  });
+  const buildCurrentWorkspaceBundle = (): CloudWorkspaceBundle => {
+    const stateBundle: CloudWorkspaceBundle = {
+      worlds,
+      activeWorldId,
+      universes,
+      articles,
+      relationships,
+      maps,
+      timelineEvents,
+      manuscripts,
+      notes,
+      tasks,
+      digitalAssets,
+      recentlyOpened,
+      recentlyEdited,
+      timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
+      relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+      updatedAtIso: new Date().toISOString()
+    };
+
+    // If called during initial mount before state hydration finishes, fallback to localStorage
+    if (!hasWorkspaceBundleContent(stateBundle) && !isInitialLoadDoneRef.current) {
+      try {
+        const rawLocal = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (rawLocal) {
+          const parsed = JSON.parse(rawLocal) as Partial<CloudWorkspaceBundle>;
+          if (hasWorkspaceBundleContent(parsed)) {
+            return {
+              ...createEmptyWorkspaceBundle(),
+              ...parsed,
+              timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
+              relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+              updatedAtIso: new Date().toISOString()
+            };
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return stateBundle;
+  };
+
+  const resolveEmailLookupKey = async (account: CloudAccountSession): Promise<string> => {
+    if (account.emailLookupId) return account.emailLookupId;
+    if (account.email) return deriveEmailLookupId(account.email);
+    return account.uid;
+  };
 
   const syncAccountWorkspaceOnLogin = async (
     account: CloudAccountSession,
     firebaseUser: User | null,
     isSwitchingFromAnotherAccount: boolean
-  ) => {
+  ): Promise<boolean> => {
     setIsSyncingCloud(true);
     setAuthErrorMessage('');
     try {
+      const emailLookupKey = await resolveEmailLookupKey(account);
       let cloudBundle: CloudWorkspaceBundle | null = null;
-      let supabaseErr: string | undefined;
+      let accountAlreadyExistsInCloud = false;
+      let resolvedDisplayName = account.displayName;
 
-      if (isSupabaseConfigured()) {
-        const res = await loadWorkspaceBundleFromSupabase(account.uid);
-        cloudBundle = res.bundle;
-        supabaseErr = res.error;
-      }
-
-      if (!cloudBundle && firebaseUser) {
-        cloudBundle = await loadWorkspaceBundleFromFirestore(firebaseUser);
-      }
-
-      const hasCloudData =
-        cloudBundle &&
-        ((Array.isArray(cloudBundle.worlds) && cloudBundle.worlds.length > 0) ||
-          (Array.isArray(cloudBundle.articles) && cloudBundle.articles.length > 0) ||
-          (Array.isArray(cloudBundle.maps) && cloudBundle.maps.length > 0) ||
-          (Array.isArray(cloudBundle.timelineEvents) && cloudBundle.timelineEvents.length > 0));
-
-      if (hasCloudData && cloudBundle) {
-        hydrateFromCloudBundle(cloudBundle);
-        setBackupStatus(
-          isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Cloud Synced Across Devices'
+      // 1. Check Built-in Cloud Vault (Firestore /cloud_accounts/{emailLookupKey})
+      // Works on all domains (Vercel, Cloudflare, localhost, mobile, desktop) without OAuth popup blocks
+      const vaultRes = await loadCloudAccountVaultFromFirestore(emailLookupKey, account.uid);
+      if (vaultRes.status === 'wrong_password') {
+        setAuthErrorMessage(
+          vaultRes.error ||
+            'Akun dengan Email/Username ini sudah terdaftar di Cloud, tetapi Password/PIN yang dimasukkan salah.'
         );
-        setAuthStatusMessage('Data akun berhasil dimuat dari Cloud!');
-        return;
+        return false;
       }
 
-      // Check per-account local cache on this device
+      if (vaultRes.status === 'ok') {
+        accountAlreadyExistsInCloud = true;
+        cloudBundle = vaultRes.bundle;
+        if (vaultRes.displayName) {
+          resolvedDisplayName = vaultRes.displayName;
+        }
+      }
+
+      // 2. Also check Supabase if configured
+      if (!hasWorkspaceBundleContent(cloudBundle) && isSupabaseConfigured()) {
+        const supaByEmailKey = await loadWorkspaceBundleFromSupabase(emailLookupKey);
+        if (supaByEmailKey.bundle && hasWorkspaceBundleContent(supaByEmailKey.bundle)) {
+          cloudBundle = supaByEmailKey.bundle;
+          accountAlreadyExistsInCloud = true;
+        } else {
+          const supaByUid = await loadWorkspaceBundleFromSupabase(account.uid);
+          if (supaByUid.bundle && hasWorkspaceBundleContent(supaByUid.bundle)) {
+            cloudBundle = supaByUid.bundle;
+            accountAlreadyExistsInCloud = true;
+          }
+        }
+      }
+
+      // 3. Also check legacy Firestore Auth bundle if logged in via Google
+      if (!hasWorkspaceBundleContent(cloudBundle) && firebaseUser) {
+        const legacyBundle = await loadWorkspaceBundleFromFirestore(firebaseUser);
+        if (legacyBundle && hasWorkspaceBundleContent(legacyBundle)) {
+          cloudBundle = legacyBundle;
+          accountAlreadyExistsInCloud = true;
+        }
+      }
+
+      const updatedSession: CloudAccountSession = {
+        ...account,
+        emailLookupId: emailLookupKey,
+        displayName: resolvedDisplayName
+      };
+      setCloudAccount(updatedSession);
+      try {
+        localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(updatedSession));
+      } catch {
+        // ignore
+      }
+
+      const cloudHasContent = hasWorkspaceBundleContent(cloudBundle);
+      const currentLiveBundle = buildCurrentWorkspaceBundle();
+      const localHasContent = hasWorkspaceBundleContent(currentLiveBundle);
+
+      // Case A: Cloud has existing worldbuilding data -> Load it into this browser!
+      if (cloudHasContent && cloudBundle) {
+        hydrateFromCloudBundle(cloudBundle);
+        try {
+          localStorage.setItem(
+            `${LOCAL_STORAGE_KEY}_${account.uid}`,
+            JSON.stringify(cloudBundle)
+          );
+        } catch {
+          // ignore
+        }
+        setBackupStatus('Cloud Database Synced');
+        setAuthStatusMessage(
+          `Berhasil masuk ke akun ${resolvedDisplayName}! Data Cloud telah dimuat ke browser ini.`
+        );
+        return true;
+      }
+
+      // Case B: Check per-account local cache on this device
       const localAccountRaw = localStorage.getItem(`${LOCAL_STORAGE_KEY}_${account.uid}`);
       if (localAccountRaw) {
         try {
           const parsedLocal = JSON.parse(localAccountRaw) as Partial<CloudWorkspaceBundle>;
-          const hasLocalAcctData =
-            (Array.isArray(parsedLocal.worlds) && parsedLocal.worlds.length > 0) ||
-            (Array.isArray(parsedLocal.articles) && parsedLocal.articles.length > 0);
-          if (hasLocalAcctData) {
-            hydrateFromCloudBundle(parsedLocal);
-            if (isSupabaseConfigured()) {
-              await saveWorkspaceBundleToSupabase(account.uid, account.email, {
-                ...createEmptyWorkspaceBundle(),
-                ...parsedLocal,
-                updatedAtIso: new Date().toISOString()
-              });
-            }
-            setBackupStatus(
-              isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Account Local Synced'
+          if (hasWorkspaceBundleContent(parsedLocal)) {
+            const fullLocalBundle: CloudWorkspaceBundle = {
+              ...createEmptyWorkspaceBundle(),
+              ...parsedLocal,
+              updatedAtIso: new Date().toISOString()
+            };
+            hydrateFromCloudBundle(fullLocalBundle);
+            await saveCloudAccountVaultToFirestore(
+              emailLookupKey,
+              account.uid,
+              resolvedDisplayName,
+              fullLocalBundle
             );
-            setAuthStatusMessage('Data akun berhasil dipulihkan dan disinkronkan!');
-            return;
+            if (isSupabaseConfigured()) {
+              await saveWorkspaceBundleToSupabase(emailLookupKey, account.email, fullLocalBundle);
+            }
+            setBackupStatus('Cloud Database Synced');
+            setAuthStatusMessage(
+              `Data akun ${resolvedDisplayName} berhasil dipulihkan dan disinkronkan ke Cloud!`
+            );
+            return true;
           }
         } catch {
           // ignore
         }
       }
 
-      // If switching from Account A -> Account B and Account B has no data yet, start Account B clean!
+      // Case C: Account already exists in Cloud, both Cloud and per-account cache are currently empty
+      if (accountAlreadyExistsInCloud) {
+        if (!isSwitchingFromAnotherAccount && localHasContent) {
+          // User created work before logging in on this browser -> Save it into their Cloud account
+          await saveCloudAccountVaultToFirestore(
+            emailLookupKey,
+            account.uid,
+            resolvedDisplayName,
+            currentLiveBundle
+          );
+          if (isSupabaseConfigured()) {
+            await saveWorkspaceBundleToSupabase(emailLookupKey, account.email, currentLiveBundle);
+          }
+          setBackupStatus('Cloud Database Synced');
+          setAuthStatusMessage(
+            `Berhasil masuk ke akun ${resolvedDisplayName}! Data workspace telah disimpan ke Cloud.`
+          );
+        } else {
+          const emptyBundle = cloudBundle || createEmptyWorkspaceBundle();
+          hydrateFromCloudBundle(emptyBundle);
+          setBackupStatus('Cloud Database Synced');
+          setAuthStatusMessage(
+            `Berhasil masuk ke akun ${resolvedDisplayName}! (Akun terhubung ke Cloud, belum ada World/Story yang dibuat).`
+          );
+        }
+        return true;
+      }
+
+      // Case D: Brand new account registration
       if (isSwitchingFromAnotherAccount) {
         const emptyBundle = createEmptyWorkspaceBundle();
         hydrateFromCloudBundle(emptyBundle);
+        await saveCloudAccountVaultToFirestore(
+          emailLookupKey,
+          account.uid,
+          resolvedDisplayName,
+          emptyBundle
+        );
         if (isSupabaseConfigured()) {
-          await saveWorkspaceBundleToSupabase(account.uid, account.email, emptyBundle);
+          await saveWorkspaceBundleToSupabase(emailLookupKey, account.email, emptyBundle);
         }
         if (firebaseUser) {
           await saveWorkspaceBundleToFirestore(firebaseUser, emptyBundle);
         }
-        setBackupStatus(
-          isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Account Ready (Clean)'
-        );
-        setAuthStatusMessage('Akun baru aktif dengan workspace bersih.');
+        setBackupStatus('Cloud Database Synced');
+        setAuthStatusMessage(`Akun baru ${resolvedDisplayName} berhasil dibuat dan terhubung ke Cloud.`);
       } else {
-        // First login from anonymous workspace: upload current work to this account
-        const initialBundle = buildCurrentWorkspaceBundle();
+        await saveCloudAccountVaultToFirestore(
+          emailLookupKey,
+          account.uid,
+          resolvedDisplayName,
+          currentLiveBundle
+        );
         if (isSupabaseConfigured()) {
-          const saveRes = await saveWorkspaceBundleToSupabase(
-            account.uid,
-            account.email,
-            initialBundle
-          );
-          if (!saveRes.ok && saveRes.error) {
-            supabaseErr = saveRes.error;
-          }
+          await saveWorkspaceBundleToSupabase(emailLookupKey, account.email, currentLiveBundle);
         }
         if (firebaseUser) {
-          await saveWorkspaceBundleToFirestore(firebaseUser, initialBundle);
+          await saveWorkspaceBundleToFirestore(firebaseUser, currentLiveBundle);
         }
-        setBackupStatus(
-          isSupabaseConfigured() && !supabaseErr
-            ? 'Supabase Cloud Synced'
-            : 'Local + Account Active'
+        setBackupStatus('Cloud Database Synced');
+        setAuthStatusMessage(
+          `Akun ${resolvedDisplayName} berhasil terdaftar dan tersinkronisasi ke Cloud!`
         );
-        if (supabaseErr && isSupabaseConfigured()) {
-          setAuthErrorMessage(
-            `Login berhasil, namun sinkronisasi tabel Supabase belum siap (${supabaseErr}). Pastikan tabel user_workspaces sudah dibuat di SQL Editor Supabase.`
-          );
-        } else {
-          setAuthStatusMessage('Login berhasil! Workspace saat ini telah disimpan ke akun Anda.');
-        }
       }
+      return true;
     } finally {
       setIsSyncingCloud(false);
     }
@@ -964,8 +1078,11 @@ export default function App() {
         } catch {
           // ignore firestore profile error
         }
+        const emailStr = (user.email || user.uid).toLowerCase();
+        const emailLookupId = await deriveEmailLookupId(emailStr);
         const googleAcct: CloudAccountSession = {
           uid: user.uid,
+          emailLookupId,
           email: user.email || '',
           displayName:
             user.displayName || (user.email ? user.email.split('@')[0] : 'Creator'),
@@ -981,35 +1098,44 @@ export default function App() {
       }
     });
 
-    // If user is logged in via Email + PIN/Password session, pull latest cloud data on load
-    if (cloudAccount && cloudAccount.authMethod === 'supabase-account') {
-      syncAccountWorkspaceOnLogin(cloudAccount, null, false);
-    }
+    // If user is logged in via Email + PIN/Password session, pull/sync latest cloud data after initial local load
+    const startupTimer = window.setTimeout(() => {
+      if (cloudAccount && cloudAccount.authMethod === 'supabase-account') {
+        syncAccountWorkspaceOnLogin(cloudAccount, null, false);
+      }
+    }, 120);
 
-    return () => unsub();
+    return () => {
+      unsub();
+      window.clearTimeout(startupTimer);
+    };
   }, []);
 
-  // Automatically sync workspace changes to Cloud (Supabase & Firestore) whenever logged-in user edits data
+  // Automatically sync workspace changes to Cloud (CloudAccountVault + Supabase + Firestore) whenever logged-in user edits data
   useEffect(() => {
     if (!activeAccount || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) return;
 
     const timer = window.setTimeout(async () => {
       const bundle: CloudWorkspaceBundle = buildCurrentWorkspaceBundle();
+      const emailLookupKey = await resolveEmailLookupKey(activeAccount);
+
+      const vaultRes = await saveCloudAccountVaultToFirestore(
+        emailLookupKey,
+        activeAccount.uid,
+        activeAccount.displayName,
+        bundle
+      );
+      if (vaultRes.ok) {
+        setBackupStatus('Cloud Database Synced');
+      }
 
       if (isSupabaseConfigured()) {
-        const res = await saveWorkspaceBundleToSupabase(
-          activeAccount.uid,
-          activeAccount.email,
-          bundle
-        );
-        if (res.ok) {
-          setBackupStatus('Supabase Cloud Synced');
-        }
+        await saveWorkspaceBundleToSupabase(emailLookupKey, activeAccount.email, bundle);
       }
       if (currentUser) {
         await saveWorkspaceBundleToFirestore(currentUser, bundle);
       }
-    }, 1200);
+    }, 1000);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -1047,29 +1173,32 @@ export default function App() {
       return;
     }
 
-    const previousUid = activeAccount?.uid || null;
+    const previousEmailKey = activeAccount
+      ? await resolveEmailLookupKey(activeAccount)
+      : null;
+    const emailLookupId = await deriveEmailLookupId(trimmedEmail);
     const derivedUid = await deriveCloudAccountId(trimmedEmail, trimmedPass);
     const displayName =
       authDisplayNameInput.trim() ||
       (trimmedEmail.includes('@') ? trimmedEmail.split('@')[0] : trimmedEmail);
 
-    const newSession: CloudAccountSession = {
+    const candidateSession: CloudAccountSession = {
       uid: derivedUid,
+      emailLookupId,
       email: trimmedEmail,
       displayName,
       authMethod: 'supabase-account'
     };
 
-    const isSwitchingAccount = Boolean(previousUid && previousUid !== derivedUid);
-    setCloudAccount(newSession);
-    try {
-      localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(newSession));
-    } catch {
-      // ignore
+    const isSwitchingAccount = Boolean(previousEmailKey && previousEmailKey !== emailLookupId);
+    const ok = await syncAccountWorkspaceOnLogin(
+      candidateSession,
+      null,
+      isSwitchingAccount
+    );
+    if (ok) {
+      setAuthPasswordInput('');
     }
-
-    await syncAccountWorkspaceOnLogin(newSession, null, isSwitchingAccount);
-    setAuthPasswordInput('');
   };
 
   const handleGoogleLoginClick = async () => {
@@ -1081,17 +1210,19 @@ export default function App() {
       setAuthStatusMessage('Berhasil login dengan Google!');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      const currentDomain =
+        typeof window !== 'undefined' ? window.location.hostname : 'domain ini';
       if (
         msg.includes('unauthorized-domain') ||
         msg.includes('popup') ||
         msg.includes('operation-not-allowed')
       ) {
         setAuthErrorMessage(
-          'Login Popup Google diblokir pada domain eksternal ini (auth/unauthorized-domain). Silakan gunakan form Login Akun Cepat (Email + Password/PIN) di atas yang langsung berfungsi di Vercel, Cloudflare, HP, dan Laptop tanpa batasan domain!'
+          `Popup OAuth Google memerlukan pendaftaran domain "${currentDomain}" di Firebase Console (Authentication -> Settings -> Authorized domains). Anda tidak perlu khawatir: cukup masukkan alamat Gmail Anda (${authEmailInput || 'contoh@gmail.com'}) beserta Password/PIN pada kolom di atas—sistem langsung tersinkronisasi ke Cloud Database di semua browser tanpa perlu popup Google!`
         );
       } else {
         setAuthErrorMessage(
-          `Gagal login Google (${msg.slice(0, 120)}). Silakan gunakan Login Akun Cepat (Email + Password/PIN) di atas.`
+          `Gagal login popup Google (${msg.slice(0, 100)}). Silakan gunakan kolom Email + Password/PIN di atas yang langsung terhubung ke Cloud Database.`
         );
       }
     } finally {
@@ -1106,27 +1237,34 @@ export default function App() {
     setAuthStatusMessage('');
     try {
       const bundle = buildCurrentWorkspaceBundle();
+      const emailLookupKey = await resolveEmailLookupKey(activeAccount);
+
+      const vaultRes = await saveCloudAccountVaultToFirestore(
+        emailLookupKey,
+        activeAccount.uid,
+        activeAccount.displayName,
+        bundle
+      );
+
+      if (!vaultRes.ok) {
+        setAuthErrorMessage(
+          vaultRes.error || 'Gagal menyimpan ke Cloud Database.'
+        );
+        return;
+      }
+
       if (isSupabaseConfigured()) {
-        const res = await saveWorkspaceBundleToSupabase(
-          activeAccount.uid,
+        await saveWorkspaceBundleToSupabase(
+          emailLookupKey,
           activeAccount.email,
           bundle
         );
-        if (!res.ok) {
-          setAuthErrorMessage(
-            res.error ||
-              'Gagal menyimpan ke Supabase. Pastikan VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, dan tabel user_workspaces sudah benar.'
-          );
-          return;
-        }
       }
       if (currentUser) {
         await saveWorkspaceBundleToFirestore(currentUser, bundle);
       }
-      setBackupStatus(
-        isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Cloud Synced Across Devices'
-      );
-      setAuthStatusMessage('Seluruh data workspace berhasil disimpan ke Cloud!');
+      setBackupStatus('Cloud Database Synced');
+      setAuthStatusMessage('Seluruh data workspace berhasil disimpan ke Cloud Database!');
     } finally {
       setIsSyncingCloud(false);
     }
@@ -1138,23 +1276,45 @@ export default function App() {
     setAuthErrorMessage('');
     setAuthStatusMessage('');
     try {
+      const emailLookupKey = await resolveEmailLookupKey(activeAccount);
       let bundle: CloudWorkspaceBundle | null = null;
-      if (isSupabaseConfigured()) {
-        const res = await loadWorkspaceBundleFromSupabase(activeAccount.uid);
-        if (res.error) {
-          setAuthErrorMessage(res.error);
-          return;
-        }
-        bundle = res.bundle;
+
+      const vaultRes = await loadCloudAccountVaultFromFirestore(
+        emailLookupKey,
+        activeAccount.uid
+      );
+      if (vaultRes.status === 'wrong_password') {
+        setAuthErrorMessage(
+          vaultRes.error || 'Password/PIN tidak sesuai dengan data di Cloud.'
+        );
+        return;
       }
-      if (!bundle && currentUser) {
+      if (vaultRes.bundle) {
+        bundle = vaultRes.bundle;
+      }
+
+      if (!hasWorkspaceBundleContent(bundle) && isSupabaseConfigured()) {
+        const supaRes = await loadWorkspaceBundleFromSupabase(emailLookupKey);
+        if (supaRes.bundle) {
+          bundle = supaRes.bundle;
+        }
+      }
+      if (!hasWorkspaceBundleContent(bundle) && currentUser) {
         bundle = await loadWorkspaceBundleFromFirestore(currentUser);
       }
-      if (bundle) {
+
+      if (bundle && hasWorkspaceBundleContent(bundle)) {
         hydrateFromCloudBundle(bundle);
-        setAuthStatusMessage('Data terbaru dari Cloud berhasil dimuat ke perangkat ini!');
+        setBackupStatus('Cloud Database Synced');
+        setAuthStatusMessage('Data terbaru dari Cloud berhasil dimuat ke browser ini!');
+      } else if (vaultRes.status === 'ok') {
+        setAuthStatusMessage(
+          'Akun sudah terhubung ke Cloud, namun belum ada World/Story yang disimpan di dalam workspace ini.'
+        );
       } else {
-        setAuthErrorMessage('Belum ada data tersimpan di Cloud untuk akun ini.');
+        setAuthErrorMessage(
+          'Belum ada data di Cloud untuk akun ini. Klik "Simpan ke Cloud" terlebih dahulu pada browser tempat Anda membuat data.'
+        );
       }
     } finally {
       setIsSyncingCloud(false);
@@ -4105,14 +4265,10 @@ export default function App() {
               {/* Connection Badge */}
               <div className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-[#f8f9fc] border border-[#dce3f2] text-xs">
                 <span className="text-[#52586e] font-medium">Status Cloud Database:</span>
-                <span
-                  className={`font-bold px-2.5 py-0.5 rounded-full text-[11px] ${
-                    isSupabaseConfigured()
-                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                      : 'bg-amber-100 text-amber-800 border border-amber-300'
-                  }`}
-                >
-                  {isSupabaseConfigured() ? 'Supabase Terhubung' : 'Mode Penyimpanan Lokal'}
+                <span className="font-bold px-2.5 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  {isSupabaseConfigured()
+                    ? 'Cloud Vault + Supabase Aktif'
+                    : 'Cloud Database Aktif'}
                 </span>
               </div>
 

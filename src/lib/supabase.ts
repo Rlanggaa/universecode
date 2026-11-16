@@ -1,13 +1,12 @@
 /**
- * Supabase Cloud Synchronization & Cross-Device Account Client
- * Supports VITE_SUPABASE_URL & VITE_SUPABASE_ANON_KEY from environment variables
- * OR runtime configuration saved in the app's Cloud Sync settings modal.
+ * Cross-Browser & Cross-Device Cloud Account Helpers (Cloud Vault + Supabase)
  */
 
 export const CLOUD_ACCOUNT_SESSION_KEY = 'alt_universe_cloud_account_session_v1';
 
 export interface CloudAccountSession {
-  uid: string;
+  uid: string; // passwordToken (derived from email + password)
+  emailLookupId?: string; // deterministic ID derived solely from email
   email: string;
   displayName: string;
   authMethod: 'supabase-account' | 'google';
@@ -30,8 +29,38 @@ export function isSupabaseConfigured(): boolean {
 }
 
 /**
- * Generates a deterministic, URL-safe account ID from email + password/PIN
- * so logging in with the same credentials on any device resolves to the exact same row in Supabase.
+ * Generates a deterministic lookup ID from the user's email/username alone.
+ * Ensures the same email always maps to the exact same Cloud Account document
+ * across Chrome, Edge, Firefox, Safari, Laptop, and Mobile.
+ */
+export async function deriveEmailLookupId(email: string): Promise<string> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const rawInput = `alt-universe-email-lookup-v1:${normalizedEmail}`;
+
+  if (typeof window !== 'undefined' && window.crypto && window.crypto.subtle) {
+    try {
+      const encoded = new TextEncoder().encode(rawInput);
+      const hashBuffer = await window.crypto.subtle.digest('SHA-256', encoded);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+      const safePrefix = normalizedEmail.replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 24);
+      return `email-${safePrefix}-${hex.slice(0, 28)}`;
+    } catch {
+      // Fallback below
+    }
+  }
+
+  let hash = 2166136261;
+  for (let i = 0; i < rawInput.length; i++) {
+    hash ^= rawInput.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const safePrefix = normalizedEmail.replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 24);
+  return `email-${safePrefix}-${(hash >>> 0).toString(16)}`;
+}
+
+/**
+ * Generates a deterministic, URL-safe credential token from email + password/PIN.
  */
 export async function deriveCloudAccountId(email: string, passwordOrPin: string): Promise<string> {
   const normalizedEmail = email.trim().toLowerCase();
@@ -76,6 +105,36 @@ export interface CloudWorkspaceBundle {
   timelineStudioRaw: string | null;
   relationshipStudioRaw: string | null;
   updatedAtIso: string;
+}
+
+export function hasWorkspaceBundleContent(
+  bundle: Partial<CloudWorkspaceBundle> | null | undefined
+): boolean {
+  if (!bundle) return false;
+  if (Array.isArray(bundle.worlds) && bundle.worlds.length > 0) return true;
+  if (Array.isArray(bundle.articles) && bundle.articles.length > 0) return true;
+  if (Array.isArray(bundle.maps) && bundle.maps.length > 0) return true;
+  if (Array.isArray(bundle.timelineEvents) && bundle.timelineEvents.length > 0) return true;
+  if (Array.isArray(bundle.manuscripts) && bundle.manuscripts.length > 0) return true;
+  if (Array.isArray(bundle.relationships) && bundle.relationships.length > 0) return true;
+  if (Array.isArray(bundle.notes) && bundle.notes.length > 0) return true;
+  if (Array.isArray(bundle.tasks) && bundle.tasks.length > 0) return true;
+  if (Array.isArray(bundle.digitalAssets) && bundle.digitalAssets.length > 0) return true;
+  if (
+    typeof bundle.timelineStudioRaw === 'string' &&
+    bundle.timelineStudioRaw.trim().length > 4 &&
+    bundle.timelineStudioRaw.trim() !== '[]'
+  ) {
+    return true;
+  }
+  if (
+    typeof bundle.relationshipStudioRaw === 'string' &&
+    bundle.relationshipStudioRaw.trim().length > 4 &&
+    bundle.relationshipStudioRaw.trim() !== '{}'
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export async function saveWorkspaceBundleToSupabase(

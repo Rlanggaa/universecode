@@ -395,3 +395,177 @@ export function subscribeUserArticles(
   );
 }
 
+const CHUNK_SIZE_CHARS = 700000;
+const MAX_CHUNKS = 25;
+
+export async function saveCloudAccountVaultToFirestore(
+  emailLookupId: string,
+  passwordToken: string,
+  displayName: string,
+  bundle: CloudWorkspaceBundle
+): Promise<{ ok: boolean; error?: string }> {
+  const safeAccountId = sanitizeId(emailLookupId);
+  const safePasswordToken = sanitizeId(passwordToken);
+  const safeDisplayName = truncateString(displayName || 'Creator', 100, 1);
+
+  try {
+    const serialized = JSON.stringify(bundle);
+    const chunks: string[] = [];
+    for (let i = 0; i < serialized.length; i += CHUNK_SIZE_CHARS) {
+      chunks.push(serialized.slice(i, i + CHUNK_SIZE_CHARS));
+    }
+    if (chunks.length === 0) {
+      chunks.push('{}');
+    }
+    const chunkCount = Math.min(chunks.length, MAX_CHUNKS);
+    const chunk0 = chunks[0];
+
+    const accountRef = doc(db, 'cloud_accounts', safeAccountId);
+    let existingSnap;
+    try {
+      existingSnap = await getDocFromServer(accountRef);
+    } catch {
+      existingSnap = await getDoc(accountRef);
+    }
+
+    if (existingSnap.exists()) {
+      const existingData = existingSnap.data();
+      if (existingData.passwordToken && existingData.passwordToken !== safePasswordToken) {
+        return {
+          ok: false,
+          error:
+            'Email ini sudah terdaftar di Cloud dengan Password/PIN yang berbeda. Masukkan Password/PIN yang sesuai.'
+        };
+      }
+      await updateDoc(accountRef, {
+        displayName: safeDisplayName,
+        chunkCount,
+        payloadChunk0: chunk0,
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      await setDoc(accountRef, {
+        accountId: safeAccountId,
+        passwordToken: safePasswordToken,
+        displayName: safeDisplayName,
+        chunkCount,
+        payloadChunk0: chunk0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    // Save additional overflow chunks (1..chunkCount-1)
+    for (let idx = 1; idx < chunkCount; idx++) {
+      const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+      const chunkRef = doc(db, 'cloud_backups', chunkDocId);
+      let existingChunk;
+      try {
+        existingChunk = await getDocFromServer(chunkRef);
+      } catch {
+        existingChunk = await getDoc(chunkRef);
+      }
+
+      if (existingChunk.exists()) {
+        await updateDoc(chunkRef, {
+          payloadChunk: chunks[idx],
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        await setDoc(chunkRef, {
+          accountId: safeAccountId,
+          passwordToken: safePasswordToken,
+          chunkIndex: idx,
+          payloadChunk: chunks[idx],
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      }
+    }
+
+    return { ok: true };
+  } catch (err) {
+    console.error('CloudAccountVault save error:', err);
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Gagal menyimpan data ke Cloud Vault.'
+    };
+  }
+}
+
+export async function loadCloudAccountVaultFromFirestore(
+  emailLookupId: string,
+  passwordToken: string
+): Promise<{
+  status: 'ok' | 'wrong_password' | 'not_found' | 'error';
+  bundle: CloudWorkspaceBundle | null;
+  displayName?: string;
+  error?: string;
+}> {
+  const safeAccountId = sanitizeId(emailLookupId);
+  const safePasswordToken = sanitizeId(passwordToken);
+
+  try {
+    const accountRef = doc(db, 'cloud_accounts', safeAccountId);
+    let snap;
+    try {
+      snap = await getDocFromServer(accountRef);
+    } catch {
+      snap = await getDoc(accountRef);
+    }
+
+    if (!snap.exists()) {
+      return { status: 'not_found', bundle: null };
+    }
+
+    const data = snap.data();
+    if (data.passwordToken && data.passwordToken !== safePasswordToken) {
+      return {
+        status: 'wrong_password',
+        bundle: null,
+        error:
+          'Akun dengan Email/Username ini sudah terdaftar di Cloud, tetapi Password/PIN yang Anda masukkan salah.'
+      };
+    }
+
+    const chunkCount = typeof data.chunkCount === 'number' ? data.chunkCount : 1;
+    let fullJson = typeof data.payloadChunk0 === 'string' ? data.payloadChunk0 : '';
+
+    for (let idx = 1; idx < chunkCount; idx++) {
+      const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+      const chunkRef = doc(db, 'cloud_backups', chunkDocId);
+      let chunkSnap;
+      try {
+        chunkSnap = await getDocFromServer(chunkRef);
+      } catch {
+        chunkSnap = await getDoc(chunkRef);
+      }
+      if (chunkSnap.exists()) {
+        const cData = chunkSnap.data();
+        if (typeof cData.payloadChunk === 'string') {
+          fullJson += cData.payloadChunk;
+        }
+      }
+    }
+
+    if (fullJson && fullJson.startsWith('{')) {
+      const parsed = JSON.parse(fullJson) as CloudWorkspaceBundle;
+      return {
+        status: 'ok',
+        bundle: parsed,
+        displayName: typeof data.displayName === 'string' ? data.displayName : undefined
+      };
+    }
+
+    return { status: 'ok', bundle: null };
+  } catch (err) {
+    console.error('CloudAccountVault load error:', err);
+    return {
+      status: 'error',
+      bundle: null,
+      error: err instanceof Error ? err.message : 'Gagal memuat data dari Cloud Vault.'
+    };
+  }
+}
+
+
