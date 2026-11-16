@@ -1161,9 +1161,9 @@ export const PaginatedStoryStudioView: React.FC<PaginatedStoryStudioViewProps> =
           </button>
         </div>
 
-        {/* Bottom Workspace Action Bar & Saved Stories List */}
+        {/* Bottom Workspace Action Bar (Single Multi-Page Story Mode) */}
         {!isStoryFullscreen && (
-          <div className="space-y-5 pb-8">
+          <div className="space-y-4 pb-8">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex flex-wrap items-center gap-3 text-xs text-[#52586e]">
                 <span className="font-mono tabular-nums">
@@ -1175,30 +1175,9 @@ export const PaginatedStoryStudioView: React.FC<PaginatedStoryStudioViewProps> =
                     Story tersimpan otomatis
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={onOpenAdvancedWiki}
-                  className="text-[#6d7696] hover:text-[#181b26] underline ml-1 font-semibold"
-                >
-                  Buka Daftar Artikel &amp; Tag ({totalArticlesCount})
-                </button>
               </div>
 
               <div className="flex items-center gap-2.5">
-                {(storySynopsis || storyText || storyTitle || activeStoryId) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onStartNewStory();
-                      setPages([{ id: 'page-1', text: '', images: [] }]);
-                      setCurrentPageIndex(0);
-                      setSelectedImageId(null);
-                    }}
-                    className="px-4 py-2 rounded-full border border-[#494a52] bg-white text-xs font-semibold text-[#181b26] hover:bg-[#e8eef9] transition-colors"
-                  >
-                    + Cerita Baru
-                  </button>
-                )}
                 <button
                   type="submit"
                   className="px-6 py-2 rounded-full bg-[#6d7696] hover:bg-[#5d6685] text-white font-serif font-semibold text-xs border border-[#879fd0] shadow-[0_4px_14px_rgba(109,118,150,0.35)] transition-all"
@@ -1207,60 +1186,6 @@ export const PaginatedStoryStudioView: React.FC<PaginatedStoryStudioViewProps> =
                 </button>
               </div>
             </div>
-
-            {savedStoryArticles.length > 0 && (
-              <div className="pt-4 border-t border-[#d5dced] space-y-3">
-                <div className="text-xs font-bold text-[#181b26]">
-                  Daftar Lembar Cerita Tersimpan
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {savedStoryArticles.map((st) => {
-                    let pageCountBadge = 1;
-                    const rawPages = st.templateValues?.StoryPagesJson;
-                    if (typeof rawPages === 'string' && rawPages.startsWith('[')) {
-                      try {
-                        const parsed = JSON.parse(rawPages);
-                        if (Array.isArray(parsed)) pageCountBadge = Math.max(1, parsed.length);
-                      } catch {
-                        // ignore
-                      }
-                    }
-                    return (
-                      <button
-                        key={st.id}
-                        type="button"
-                        onClick={() => onSelectSavedStory(st)}
-                        className={`text-left p-3.5 rounded-[22px] border transition-all flex items-center gap-3 ${
-                          activeStoryId === st.id
-                            ? 'bg-[#6d7696] text-white border-[#879fd0] shadow-md'
-                            : 'bg-white text-[#181b26] border-[#dce3f2] hover:border-[#879fd0] shadow-xs'
-                        }`}
-                      >
-                        <div className="w-11 h-11 rounded-xl bg-[#879fd0] border border-[#7792c4] flex items-center justify-center shrink-0">
-                          <FileText className="w-4 h-4 text-white" />
-                        </div>
-                        <div className="min-w-0">
-                          <div
-                            className={`text-xs font-bold truncate ${
-                              activeStoryId === st.id ? 'text-white' : 'text-[#181b26]'
-                            }`}
-                          >
-                            {st.title}
-                          </div>
-                          <div
-                            className={`text-[11px] truncate mt-0.5 ${
-                              activeStoryId === st.id ? 'text-white/85' : 'text-[#52586e]'
-                            }`}
-                          >
-                            {pageCountBadge} halaman · {st.wordCount} kata
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </div>
         )}
       </form>

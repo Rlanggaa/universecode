@@ -4,11 +4,21 @@
 
 export const CLOUD_ACCOUNT_SESSION_KEY = 'alt_universe_cloud_account_session_v1';
 
+export interface CloudUserProfile {
+  displayName: string;
+  roleTitle: string;
+  bio: string;
+  avatarUrl: string;
+}
+
 export interface CloudAccountSession {
   uid: string; // passwordToken (derived from email + password)
   emailLookupId?: string; // deterministic ID derived solely from email
   email: string;
   displayName: string;
+  roleTitle?: string;
+  bio?: string;
+  avatarUrl?: string;
   authMethod: 'supabase-account' | 'google';
 }
 
@@ -104,6 +114,7 @@ export interface CloudWorkspaceBundle {
   recentlyEdited: unknown[];
   timelineStudioRaw: string | null;
   relationshipStudioRaw: string | null;
+  userProfile?: CloudUserProfile;
   updatedAtIso: string;
 }
 
@@ -120,6 +131,16 @@ export function hasWorkspaceBundleContent(
   if (Array.isArray(bundle.notes) && bundle.notes.length > 0) return true;
   if (Array.isArray(bundle.tasks) && bundle.tasks.length > 0) return true;
   if (Array.isArray(bundle.digitalAssets) && bundle.digitalAssets.length > 0) return true;
+  if (
+    bundle.userProfile &&
+    Boolean(
+      bundle.userProfile.avatarUrl ||
+        bundle.userProfile.bio ||
+        bundle.userProfile.roleTitle
+    )
+  ) {
+    return true;
+  }
   if (
     typeof bundle.timelineStudioRaw === 'string' &&
     bundle.timelineStudioRaw.trim().length > 4 &&

@@ -221,10 +221,16 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
   }, [mode]);
 
   useEffect(() => {
-    if (!selectedEntityId) return;
-    const syncKey = `${mode}:${selectedEntityId}:${historyRevision}`;
+    const targetId =
+      mode === 'worlds'
+        ? selectedEntityId || entityList[0]?.id || ''
+        : selectedEntityId;
+    if (!targetId) return;
+    const syncKey = `${mode}:${targetId}:${historyRevision}`;
     if (lastLoadedKeyRef.current === syncKey) return;
-    const found = entityList.find((item) => item.id === selectedEntityId);
+    const found =
+      entityList.find((item) => item.id === targetId) ||
+      (mode === 'worlds' ? entityList[0] : undefined);
     if (!found) return;
     isHydratingRef.current = true;
     lastLoadedKeyRef.current = syncKey;
@@ -240,6 +246,12 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
   }, [selectedEntityId, entityList, mode, historyRevision]);
 
   const handleResetNew = () => {
+    if (mode === 'worlds' && entityList.length > 0) {
+      const primary = entityList[0];
+      setEditingId(primary.id);
+      onSelectEntity(primary.id);
+      return;
+    }
     isHydratingRef.current = true;
     lastLoadedKeyRef.current = `${mode}::${historyRevision}`;
     setEditingId('');
@@ -303,9 +315,15 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
   const handleSaveSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const finalTitle =
-      title.trim() || `${cfg.newButtonLabel.replace('New ', '')} ${entityList.length + 1}`;
+      title.trim() ||
+      (mode === 'worlds'
+        ? entityList[0]?.title || 'My World'
+        : `${cfg.newButtonLabel.replace('New ', '')} ${entityList.length + 1}`);
     const nowStamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    const idToUse = editingId || `${mode}-${Date.now()}`;
+    const idToUse =
+      mode === 'worlds'
+        ? editingId || entityList[0]?.id || `worlds-${Date.now()}`
+        : editingId || `${mode}-${Date.now()}`;
 
     const entityArticle: Article = {
       id: idToUse,
@@ -359,7 +377,11 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     );
     if (!editingId && !hasAnyContent) return;
 
-    const existing = editingId ? entityList.find((item) => item.id === editingId) : null;
+    const resolvedId =
+      mode === 'worlds'
+        ? editingId || entityList[0]?.id || ''
+        : editingId;
+    const existing = resolvedId ? entityList.find((item) => item.id === resolvedId) : null;
     if (
       existing &&
       existing.title === (title.trim() || existing.title) &&
@@ -372,11 +394,16 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     }
 
     const timer = window.setTimeout(() => {
-      const idToUse = editingId || `${mode}-${Date.now()}`;
+      const idToUse =
+        mode === 'worlds'
+          ? editingId || entityList[0]?.id || `worlds-${Date.now()}`
+          : editingId || `${mode}-${Date.now()}`;
       const finalTitle =
         title.trim() ||
         existing?.title ||
-        `${cfg.newButtonLabel.replace('New ', '')} ${entityList.length + 1}`;
+        (mode === 'worlds'
+          ? 'My World'
+          : `${cfg.newButtonLabel.replace('New ', '')} ${entityList.length + 1}`);
       const nowStamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
       const entityArticle: Article = {
@@ -478,12 +505,12 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
       />
 
       {/* ================================================================== */}
-      {/* LEFT PANEL: LIST (Smoothly slides left & collapses in Fullscreen   */}
-      {/* so Thumbnail & Article column smoothly shift and expand)           */}
+      {/* LEFT PANEL: LIST (Hidden for Single-World mode, or smoothly slides */}
+      {/* left & collapses in Fullscreen)                                    */}
       {/* ================================================================== */}
       <div
         className={`relative z-10 shrink-0 h-full min-h-0 overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          isFullscreen
+          isFullscreen || mode === 'worlds'
             ? 'w-0 lg:w-0 h-0 lg:h-full -translate-x-full opacity-0 pointer-events-none'
             : 'w-full lg:w-72 translate-x-0 opacity-100'
         }`}

@@ -234,6 +234,7 @@ export default function App() {
     return null;
   });
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
   const [authEmailInput, setAuthEmailInput] = useState<string>('');
   const [authPasswordInput, setAuthPasswordInput] = useState<string>('');
   const [authDisplayNameInput, setAuthDisplayNameInput] = useState<string>('');
@@ -242,18 +243,46 @@ export default function App() {
   const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [backupStatus, setBackupStatus] = useState<string>('Local-first Auto-Saved');
 
+  // Personalization state for logged-in Profile tab
+  const [profileDisplayName, setProfileDisplayName] = useState<string>('');
+  const [profileRoleTitle, setProfileRoleTitle] = useState<string>('Worldbuilder & Storyteller');
+  const [profileBio, setProfileBio] = useState<string>('');
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState<string>('');
+  const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
+
   const activeAccount: CloudAccountSession | null = useMemo(() => {
     if (cloudAccount) return cloudAccount;
     if (currentUser) {
       return {
         uid: currentUser.uid,
         email: currentUser.email || '',
-        displayName: currentUser.displayName || (currentUser.email ? currentUser.email.split('@')[0] : 'Creator'),
+        displayName:
+          currentUser.displayName ||
+          (currentUser.email ? currentUser.email.split('@')[0] : 'Creator'),
+        roleTitle: 'Worldbuilder & Storyteller',
+        bio: '',
+        avatarUrl: currentUser.photoURL || '',
         authMethod: 'google'
       };
     }
     return null;
   }, [cloudAccount, currentUser]);
+
+  // Sync profile form fields when activeAccount changes
+  useEffect(() => {
+    if (activeAccount) {
+      setProfileDisplayName(activeAccount.displayName || '');
+      setProfileRoleTitle(activeAccount.roleTitle || 'Worldbuilder & Storyteller');
+      setProfileBio(activeAccount.bio || '');
+      setProfileAvatarUrl(activeAccount.avatarUrl || '');
+    }
+  }, [
+    activeAccount?.uid,
+    activeAccount?.displayName,
+    activeAccount?.roleTitle,
+    activeAccount?.bio,
+    activeAccount?.avatarUrl
+  ]);
 
   // ============================================================================
   // SECTION 3.2 FIRST-TIME EXPERIENCE:
@@ -454,16 +483,45 @@ export default function App() {
     return () => window.removeEventListener('alt-universe-substudio-change', onSubStudioChange);
   }, []);
 
+  // Helper to hydrate the single canonical Story into the Paginated Story Studio state
+  const hydrateCanonicalSingleStory = (articlesList: Article[]) => {
+    const primaryStory = articlesList.find(
+      (a) => a.category === 'Stories' || (Array.isArray(a.tags) && a.tags.includes('Story'))
+    );
+    if (primaryStory) {
+      setActiveStoryId(primaryStory.id);
+      setStoryTitle(primaryStory.title || '');
+      setStorySynopsis(String(primaryStory.templateValues?.Sinopsis || primaryStory.summary || ''));
+      setStoryText(primaryStory.content || '');
+      setStoryPagesJson(String(primaryStory.templateValues?.StoryPagesJson || ''));
+      setStoryThumbnail('');
+    } else {
+      setActiveStoryId('');
+      setStoryTitle('');
+      setStorySynopsis('');
+      setStoryText('');
+      setStoryPagesJson('');
+      setStoryThumbnail('');
+    }
+  };
+
   // Load persisted local-first data if previously saved by user
   useEffect(() => {
     try {
       const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed.worlds)) setWorlds(parsed.worlds);
-        if (parsed.activeWorldId) setActiveWorldId(parsed.activeWorldId);
+        if (Array.isArray(parsed.worlds)) {
+          const singleWorlds = (parsed.worlds as World[]).slice(0, 1);
+          setWorlds(singleWorlds);
+          setActiveWorldId(singleWorlds[0]?.id || '');
+        }
         if (Array.isArray(parsed.universes)) setUniverses(parsed.universes);
-        if (Array.isArray(parsed.articles)) setArticles(parsed.articles);
+        if (Array.isArray(parsed.articles)) {
+          const loadedArticles = parsed.articles as Article[];
+          setArticles(loadedArticles);
+          hydrateCanonicalSingleStory(loadedArticles);
+        }
         if (Array.isArray(parsed.relationships)) setRelationships(parsed.relationships);
         if (Array.isArray(parsed.maps)) setMaps(parsed.maps);
         if (Array.isArray(parsed.timelineEvents)) setTimelineEvents(parsed.timelineEvents);
@@ -766,10 +824,19 @@ export default function App() {
   // Helper to apply a loaded Cloud or JSON bundle into state & localStorage
   const hydrateFromCloudBundle = (bundle: Partial<CloudWorkspaceBundle>) => {
     isHydratingCloudRef.current = true;
-    if (Array.isArray(bundle.worlds)) setWorlds(bundle.worlds as World[]);
-    if (typeof bundle.activeWorldId === 'string') setActiveWorldId(bundle.activeWorldId);
+    if (Array.isArray(bundle.worlds)) {
+      const singleWorlds = (bundle.worlds as World[]).slice(0, 1);
+      setWorlds(singleWorlds);
+      setActiveWorldId(singleWorlds[0]?.id || '');
+    } else if (typeof bundle.activeWorldId === 'string') {
+      setActiveWorldId(bundle.activeWorldId);
+    }
     if (Array.isArray(bundle.universes)) setUniverses(bundle.universes as Universe[]);
-    if (Array.isArray(bundle.articles)) setArticles(bundle.articles as Article[]);
+    if (Array.isArray(bundle.articles)) {
+      const loadedArticles = bundle.articles as Article[];
+      setArticles(loadedArticles);
+      hydrateCanonicalSingleStory(loadedArticles);
+    }
     if (Array.isArray(bundle.relationships))
       setRelationships(bundle.relationships as EntityRelationship[]);
     if (Array.isArray(bundle.maps)) setMaps(bundle.maps as WorldMap[]);
@@ -784,6 +851,13 @@ export default function App() {
       setRecentlyOpened(bundle.recentlyOpened as RecentActivityItem[]);
     if (Array.isArray(bundle.recentlyEdited))
       setRecentlyEdited(bundle.recentlyEdited as RecentActivityItem[]);
+
+    if (bundle.userProfile) {
+      setProfileDisplayName(bundle.userProfile.displayName || '');
+      setProfileRoleTitle(bundle.userProfile.roleTitle || 'Worldbuilder & Storyteller');
+      setProfileBio(bundle.userProfile.bio || '');
+      setProfileAvatarUrl(bundle.userProfile.avatarUrl || '');
+    }
 
     try {
       if (typeof bundle.timelineStudioRaw === 'string') {
@@ -821,10 +895,13 @@ export default function App() {
     updatedAtIso: new Date().toISOString()
   });
 
-  const buildCurrentWorkspaceBundle = (): CloudWorkspaceBundle => {
+  const buildCurrentWorkspaceBundle = (
+    overrideProfile?: CloudAccountSession
+  ): CloudWorkspaceBundle => {
+    const acct = overrideProfile || activeAccount;
     const stateBundle: CloudWorkspaceBundle = {
-      worlds,
-      activeWorldId,
+      worlds: worlds.slice(0, 1),
+      activeWorldId: worlds[0]?.id || activeWorldId,
       universes,
       articles,
       relationships,
@@ -838,6 +915,14 @@ export default function App() {
       recentlyEdited,
       timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
       relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+      userProfile: acct
+        ? {
+            displayName: acct.displayName || profileDisplayName || 'Creator',
+            roleTitle: acct.roleTitle ?? profileRoleTitle ?? 'Worldbuilder & Storyteller',
+            bio: acct.bio ?? profileBio ?? '',
+            avatarUrl: acct.avatarUrl ?? profileAvatarUrl ?? ''
+          }
+        : undefined,
       updatedAtIso: new Date().toISOString()
     };
 
@@ -853,6 +938,7 @@ export default function App() {
               ...parsed,
               timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
               relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+              userProfile: stateBundle.userProfile,
               updatedAtIso: new Date().toISOString()
             };
           }
@@ -874,7 +960,8 @@ export default function App() {
   const syncAccountWorkspaceOnLogin = async (
     account: CloudAccountSession,
     firebaseUser: User | null,
-    isSwitchingFromAnotherAccount: boolean
+    isSwitchingFromAnotherAccount: boolean,
+    authMode: 'login' | 'register' | 'session-restore' = 'session-restore'
   ): Promise<boolean> => {
     setIsSyncingCloud(true);
     setAuthErrorMessage('');
@@ -885,12 +972,22 @@ export default function App() {
       let resolvedDisplayName = account.displayName;
 
       // 1. Check Built-in Cloud Vault (Firestore /cloud_accounts/{emailLookupKey})
-      // Works on all domains (Vercel, Cloudflare, localhost, mobile, desktop) without OAuth popup blocks
       const vaultRes = await loadCloudAccountVaultFromFirestore(emailLookupKey, account.uid);
+
+      // If user is trying to REGISTER a new account, but the email/username is already registered in Cloud:
+      if (
+        authMode === 'register' &&
+        (vaultRes.status === 'ok' || vaultRes.status === 'wrong_password')
+      ) {
+        setAuthErrorMessage(
+          'Akun dengan Email/Username ini sudah terdaftar di Cloud. Silakan gunakan tab "Masuk (Log In)" untuk masuk ke akun Anda.'
+        );
+        return false;
+      }
+
       if (vaultRes.status === 'wrong_password') {
         setAuthErrorMessage(
-          vaultRes.error ||
-            'Akun dengan Email/Username ini sudah terdaftar di Cloud, tetapi Password/PIN yang dimasukkan salah.'
+          'Password atau PIN yang Anda masukkan salah untuk akun ini. Silakan periksa kembali Password/PIN Anda.'
         );
         return false;
       }
@@ -927,10 +1024,22 @@ export default function App() {
         }
       }
 
+      // STRICT LOGIN CHECK: If user chose "Masuk (Log In)" and account does NOT exist in Cloud:
+      if (authMode === 'login' && !accountAlreadyExistsInCloud) {
+        setAuthErrorMessage(
+          'Akun tidak tersedia / belum terdaftar. Periksa kembali penulisan Email/Username Anda, atau beralih ke tab "Buat Akun Baru" untuk mendaftarkan akun baru.'
+        );
+        return false;
+      }
+
+      const cloudProfile = cloudBundle?.userProfile;
       const updatedSession: CloudAccountSession = {
         ...account,
         emailLookupId: emailLookupKey,
-        displayName: resolvedDisplayName
+        displayName: cloudProfile?.displayName || resolvedDisplayName,
+        roleTitle: cloudProfile?.roleTitle || account.roleTitle || 'Worldbuilder & Storyteller',
+        bio: cloudProfile?.bio || account.bio || '',
+        avatarUrl: cloudProfile?.avatarUrl || account.avatarUrl || ''
       };
       setCloudAccount(updatedSession);
       try {
@@ -940,7 +1049,7 @@ export default function App() {
       }
 
       const cloudHasContent = hasWorkspaceBundleContent(cloudBundle);
-      const currentLiveBundle = buildCurrentWorkspaceBundle();
+      const currentLiveBundle = buildCurrentWorkspaceBundle(updatedSession);
       const localHasContent = hasWorkspaceBundleContent(currentLiveBundle);
 
       // Case A: Cloud has existing worldbuilding data -> Load it into this browser!
@@ -956,7 +1065,7 @@ export default function App() {
         }
         setBackupStatus('Cloud Database Synced');
         setAuthStatusMessage(
-          `Berhasil masuk ke akun ${resolvedDisplayName}! Data Cloud telah dimuat ke browser ini.`
+          `Berhasil masuk ke akun ${updatedSession.displayName}! Data Cloud telah dimuat ke browser ini.`
         );
         return true;
       }
@@ -970,13 +1079,19 @@ export default function App() {
             const fullLocalBundle: CloudWorkspaceBundle = {
               ...createEmptyWorkspaceBundle(),
               ...parsedLocal,
+              userProfile: parsedLocal.userProfile || {
+                displayName: updatedSession.displayName,
+                roleTitle: updatedSession.roleTitle || 'Worldbuilder & Storyteller',
+                bio: updatedSession.bio || '',
+                avatarUrl: updatedSession.avatarUrl || ''
+              },
               updatedAtIso: new Date().toISOString()
             };
             hydrateFromCloudBundle(fullLocalBundle);
             await saveCloudAccountVaultToFirestore(
               emailLookupKey,
               account.uid,
-              resolvedDisplayName,
+              updatedSession.displayName,
               fullLocalBundle
             );
             if (isSupabaseConfigured()) {
@@ -984,7 +1099,7 @@ export default function App() {
             }
             setBackupStatus('Cloud Database Synced');
             setAuthStatusMessage(
-              `Data akun ${resolvedDisplayName} berhasil dipulihkan dan disinkronkan ke Cloud!`
+              `Data akun ${updatedSession.displayName} berhasil dipulihkan dan disinkronkan ke Cloud!`
             );
             return true;
           }
@@ -996,11 +1111,10 @@ export default function App() {
       // Case C: Account already exists in Cloud, both Cloud and per-account cache are currently empty
       if (accountAlreadyExistsInCloud) {
         if (!isSwitchingFromAnotherAccount && localHasContent) {
-          // User created work before logging in on this browser -> Save it into their Cloud account
           await saveCloudAccountVaultToFirestore(
             emailLookupKey,
             account.uid,
-            resolvedDisplayName,
+            updatedSession.displayName,
             currentLiveBundle
           );
           if (isSupabaseConfigured()) {
@@ -1008,27 +1122,35 @@ export default function App() {
           }
           setBackupStatus('Cloud Database Synced');
           setAuthStatusMessage(
-            `Berhasil masuk ke akun ${resolvedDisplayName}! Data workspace telah disimpan ke Cloud.`
+            `Berhasil masuk ke akun ${updatedSession.displayName}! Data workspace telah disimpan ke Cloud.`
           );
         } else {
           const emptyBundle = cloudBundle || createEmptyWorkspaceBundle();
           hydrateFromCloudBundle(emptyBundle);
           setBackupStatus('Cloud Database Synced');
           setAuthStatusMessage(
-            `Berhasil masuk ke akun ${resolvedDisplayName}! (Akun terhubung ke Cloud, belum ada World/Story yang dibuat).`
+            `Berhasil masuk ke akun ${updatedSession.displayName}! Silakan personalisasi profil atau mulai membuat World & Story.`
           );
         }
         return true;
       }
 
-      // Case D: Brand new account registration
+      // Case D: Brand new account registration (authMode === 'register' or Google first login)
       if (isSwitchingFromAnotherAccount) {
-        const emptyBundle = createEmptyWorkspaceBundle();
+        const emptyBundle: CloudWorkspaceBundle = {
+          ...createEmptyWorkspaceBundle(),
+          userProfile: {
+            displayName: updatedSession.displayName,
+            roleTitle: updatedSession.roleTitle || 'Worldbuilder & Storyteller',
+            bio: updatedSession.bio || '',
+            avatarUrl: updatedSession.avatarUrl || ''
+          }
+        };
         hydrateFromCloudBundle(emptyBundle);
         await saveCloudAccountVaultToFirestore(
           emailLookupKey,
           account.uid,
-          resolvedDisplayName,
+          updatedSession.displayName,
           emptyBundle
         );
         if (isSupabaseConfigured()) {
@@ -1038,12 +1160,14 @@ export default function App() {
           await saveWorkspaceBundleToFirestore(firebaseUser, emptyBundle);
         }
         setBackupStatus('Cloud Database Synced');
-        setAuthStatusMessage(`Akun baru ${resolvedDisplayName} berhasil dibuat dan terhubung ke Cloud.`);
+        setAuthStatusMessage(
+          `Akun baru "${updatedSession.displayName}" berhasil dibuat! Anda kini dapat menyesuaikan Profil di bawah.`
+        );
       } else {
         await saveCloudAccountVaultToFirestore(
           emailLookupKey,
           account.uid,
-          resolvedDisplayName,
+          updatedSession.displayName,
           currentLiveBundle
         );
         if (isSupabaseConfigured()) {
@@ -1054,7 +1178,7 @@ export default function App() {
         }
         setBackupStatus('Cloud Database Synced');
         setAuthStatusMessage(
-          `Akun ${resolvedDisplayName} berhasil terdaftar dan tersinkronisasi ke Cloud!`
+          `Akun baru "${updatedSession.displayName}" berhasil terdaftar dan tersinkronisasi ke Cloud!`
         );
       }
       return true;
@@ -1086,6 +1210,9 @@ export default function App() {
           email: user.email || '',
           displayName:
             user.displayName || (user.email ? user.email.split('@')[0] : 'Creator'),
+          roleTitle: 'Worldbuilder & Storyteller',
+          bio: '',
+          avatarUrl: user.photoURL || '',
           authMethod: 'google'
         };
         setCloudAccount(googleAcct);
@@ -1094,14 +1221,14 @@ export default function App() {
         } catch {
           // ignore
         }
-        await syncAccountWorkspaceOnLogin(googleAcct, user, false);
+        await syncAccountWorkspaceOnLogin(googleAcct, user, false, 'session-restore');
       }
     });
 
     // If user is logged in via Email + PIN/Password session, pull/sync latest cloud data after initial local load
     const startupTimer = window.setTimeout(() => {
       if (cloudAccount && cloudAccount.authMethod === 'supabase-account') {
-        syncAccountWorkspaceOnLogin(cloudAccount, null, false);
+        syncAccountWorkspaceOnLogin(cloudAccount, null, false, 'session-restore');
       }
     }, 120);
 
@@ -1187,6 +1314,9 @@ export default function App() {
       emailLookupId,
       email: trimmedEmail,
       displayName,
+      roleTitle: 'Worldbuilder & Storyteller',
+      bio: '',
+      avatarUrl: '',
       authMethod: 'supabase-account'
     };
 
@@ -1194,10 +1324,90 @@ export default function App() {
     const ok = await syncAccountWorkspaceOnLogin(
       candidateSession,
       null,
-      isSwitchingAccount
+      isSwitchingAccount,
+      authModalMode
     );
     if (ok) {
       setAuthPasswordInput('');
+    }
+  };
+
+  // Upload & resize Avatar Photo in Profile Tab (256x256 square)
+  const handleProfileAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        const rawUrl = reader.result;
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 256;
+          canvas.height = 256;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            setProfileAvatarUrl(rawUrl);
+            return;
+          }
+          const scale = Math.max(256 / img.width, 256 / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          ctx.drawImage(img, (256 - w) / 2, (256 - h) / 2, w, h);
+          setProfileAvatarUrl(canvas.toDataURL('image/jpeg', 0.88));
+        };
+        img.onerror = () => setProfileAvatarUrl(rawUrl);
+        img.src = rawUrl;
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  // Save personalized profile (Display Name, Role, Bio, Avatar) to Session & Cloud
+  const handleSaveUserProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAccount) return;
+    setIsSyncingCloud(true);
+    setAuthErrorMessage('');
+    setAuthStatusMessage('');
+    try {
+      const cleanName =
+        profileDisplayName.trim() ||
+        activeAccount.displayName ||
+        (activeAccount.email.includes('@')
+          ? activeAccount.email.split('@')[0]
+          : activeAccount.email);
+      const updatedAccount: CloudAccountSession = {
+        ...activeAccount,
+        displayName: cleanName,
+        roleTitle: profileRoleTitle.trim() || 'Worldbuilder & Storyteller',
+        bio: profileBio.trim(),
+        avatarUrl: profileAvatarUrl
+      };
+      setCloudAccount(updatedAccount);
+      try {
+        localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(updatedAccount));
+      } catch {
+        // ignore
+      }
+
+      const bundle = buildCurrentWorkspaceBundle(updatedAccount);
+      const emailLookupKey = await resolveEmailLookupKey(updatedAccount);
+      const vaultRes = await saveCloudAccountVaultToFirestore(
+        emailLookupKey,
+        updatedAccount.uid,
+        updatedAccount.displayName,
+        bundle
+      );
+      if (vaultRes.ok) {
+        setBackupStatus('Cloud Database Synced');
+        setAuthStatusMessage('Profil Anda berhasil diperbarui dan disinkronkan ke Cloud!');
+      } else {
+        setAuthErrorMessage(vaultRes.error || 'Gagal menyimpan profil ke Cloud.');
+      }
+    } finally {
+      setIsSyncingCloud(false);
     }
   };
 
@@ -1218,11 +1428,11 @@ export default function App() {
         msg.includes('operation-not-allowed')
       ) {
         setAuthErrorMessage(
-          `Popup OAuth Google memerlukan pendaftaran domain "${currentDomain}" di Firebase Console (Authentication -> Settings -> Authorized domains). Anda tidak perlu khawatir: cukup masukkan alamat Gmail Anda (${authEmailInput || 'contoh@gmail.com'}) beserta Password/PIN pada kolom di atas—sistem langsung tersinkronisasi ke Cloud Database di semua browser tanpa perlu popup Google!`
+          `Popup OAuth Google memerlukan pendaftaran domain "${currentDomain}" di Firebase Console (Authentication -> Settings -> Authorized domains). Gunakan form Masuk / Buat Akun Baru di atas yang langsung berfungsi di semua browser dan perangkat!`
         );
       } else {
         setAuthErrorMessage(
-          `Gagal login popup Google (${msg.slice(0, 100)}). Silakan gunakan kolom Email + Password/PIN di atas yang langsung terhubung ke Cloud Database.`
+          `Gagal login popup Google (${msg.slice(0, 100)}). Silakan gunakan form Masuk / Buat Akun Baru di atas.`
         );
       }
     } finally {
@@ -1442,25 +1652,28 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // Save Story Entry Handler (Saves Paginated Story Sheets & Inline Images into local-first Articles)
+  // Save Story Entry Handler (Single Story with Unlimited Pages)
   const handleSaveStoryEntry = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!storySynopsis.trim() && !storyText.trim() && !storyTitle.trim() && !storyPagesJson.trim()) return;
 
     const targetWorld = ensureActiveWorldForQuickCreate();
+    const existingStory = articles.find(
+      (a) => a.category === 'Stories' || a.tags.includes('Story') || a.id === activeStoryId
+    );
     const firstLine = (storySynopsis.trim() || storyText.trim())
       .split('\n')[0]
       ?.replace(/^#+\s*/, '')
       .slice(0, 60);
     const resolvedTitle =
-      storyTitle.trim() || firstLine || `Story Entry (${articles.length + 1})`;
+      storyTitle.trim() || existingStory?.title || firstLine || 'Main Story';
     const nowStamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
     const wordCount = `${storySynopsis} ${storyText}`
       .trim()
       .split(/\s+/)
       .filter(Boolean).length;
 
-    const storyId = activeStoryId || `story-${Date.now()}`;
+    const storyId = existingStory?.id || activeStoryId || 'story-main';
     const storyArticle: Article = {
       id: storyId,
       worldId: targetWorld.id,
@@ -1488,7 +1701,7 @@ export default function App() {
         {
           id: `v-${Date.now()}`,
           timestamp: nowStamp,
-          author: currentUser?.displayName || 'Creator',
+          author: activeAccount?.displayName || currentUser?.displayName || 'Creator',
           note: 'Saved from Paginated Story Studio',
           contentSnapshot: storyText
         }
@@ -1498,11 +1711,13 @@ export default function App() {
       updatedAt: nowStamp
     };
 
-    setArticles((prev) =>
-      prev.some((a) => a.id === storyId)
-        ? prev.map((a) => (a.id === storyId ? storyArticle : a))
-        : [storyArticle, ...prev]
-    );
+    // Enforce strictly 1 single Story in articles
+    setArticles((prev) => {
+      const nonStoryArticles = prev.filter(
+        (a) => a.id !== storyId && a.category !== 'Stories' && !a.tags.includes('Story')
+      );
+      return [storyArticle, ...nonStoryArticles];
+    });
     setActiveStoryId(storyId);
     setSelectedArticleId(storyId);
 
@@ -1533,7 +1748,7 @@ export default function App() {
     }
   };
 
-  // Automatic real-time save for Paginated Story View
+  // Automatic real-time save for Single Paginated Story View
   useEffect(() => {
     if (activeNav !== 'articles' || showStoryAdvancedWiki || isRestoringHistoryRef.current) return;
     const hasContent = Boolean(
@@ -1541,7 +1756,9 @@ export default function App() {
     );
     if (!activeStoryId && !hasContent) return;
 
-    const existing = activeStoryId ? articles.find((a) => a.id === activeStoryId) : null;
+    const existing = articles.find(
+      (a) => a.id === activeStoryId || a.category === 'Stories' || a.tags.includes('Story')
+    );
     if (
       existing &&
       existing.title === (storyTitle.trim() || existing.title) &&
@@ -1563,14 +1780,14 @@ export default function App() {
         storyTitle.trim() ||
         existing?.title ||
         firstLine ||
-        `Story Entry (${articles.length + 1})`;
+        'Main Story';
       const nowStamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
       const wordCount = `${storySynopsis} ${storyText}`
         .trim()
         .split(/\s+/)
         .filter(Boolean).length;
 
-      const storyId = activeStoryId || `story-${Date.now()}`;
+      const storyId = existing?.id || activeStoryId || 'story-main';
       const storyArticle: Article = {
         id: storyId,
         worldId: targetWorld.id,
@@ -1598,7 +1815,7 @@ export default function App() {
           {
             id: `v-${Date.now()}`,
             timestamp: nowStamp,
-            author: currentUser?.displayName || 'Creator',
+            author: activeAccount?.displayName || currentUser?.displayName || 'Creator',
             note: 'Auto-saved from Paginated Story Studio',
             contentSnapshot: storyText
           }
@@ -1608,12 +1825,13 @@ export default function App() {
         updatedAt: nowStamp
       };
 
-      setArticles((prev) =>
-        prev.some((a) => a.id === storyId)
-          ? prev.map((a) => (a.id === storyId ? storyArticle : a))
-          : [storyArticle, ...prev]
-      );
-      if (!activeStoryId) {
+      setArticles((prev) => {
+        const nonStoryArticles = prev.filter(
+          (a) => a.id !== storyId && a.category !== 'Stories' && !a.tags.includes('Story')
+        );
+        return [storyArticle, ...nonStoryArticles];
+      });
+      if (activeStoryId !== storyId) {
         setActiveStoryId(storyId);
         setSelectedArticleId(storyId);
       }
@@ -1744,7 +1962,7 @@ export default function App() {
       ]);
     }
 
-    setWorlds((prev) => [...prev, createdWorld]);
+    setWorlds([createdWorld]);
     setMaps((prev) => [...prev, defaultMap]);
     setWhiteboards((prev) => [...prev, defaultWhiteboard]);
     setManuscripts((prev) => [...prev, defaultManuscript]);
@@ -1781,7 +1999,7 @@ export default function App() {
     }
   };
 
-  // Ensure a world exists before Quick Creating an Article/Character/Location/Map
+  // Ensure a world exists before Quick Creating an entity
   const ensureActiveWorldForQuickCreate = (): World => {
     if (activeWorld) return activeWorld;
     const autoWorldId = `world-${Date.now()}`;
@@ -1814,20 +2032,20 @@ export default function App() {
       ],
       markers: []
     };
-    setWorlds((prev) => [...prev, autoWorld]);
+    setWorlds([autoWorld]);
     setMaps((prev) => [...prev, defaultMap]);
     setActiveWorldId(autoWorldId);
     return autoWorld;
   };
 
-  // Quick Create Handlers (matching the 5 buttons in the PDF mockup: New World, New Article, New Character, New Location, New Map)
+  // Quick Create Handlers (World, New Character, New Location, New Map)
   const handleQuickCreateAction = (
     kind: 'world' | 'article' | 'character' | 'location' | 'map'
   ) => {
     setShowQuickCreateMenu(false);
     if (kind === 'world') {
       setIsCreatingWorld(false);
-      setSelectedArticleId('');
+      setSelectedArticleId(activeWorld?.id || worlds[0]?.id || '');
       setActiveNav('worlds');
       return;
     }
@@ -2460,24 +2678,18 @@ export default function App() {
               {workspace.name}
             </span>
             <span className="text-[#b5bfd6]">/</span>
-            {worlds.length > 0 ? (
-              <select
-                value={activeWorld?.id || ''}
-                onChange={(e) => {
-                  setActiveWorldId(e.target.value);
-                  const found = worlds.find((w) => w.id === e.target.value);
-                  if (found) {
-                    recordOpenedItem(found.id, found.name, 'World', 'worlds', found.customCss);
-                  }
+            {worlds.length > 0 && activeWorld ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedArticleId(activeWorld.id);
+                  setActiveNav('worlds');
                 }}
-                className="bg-white border border-[#cbd3e6] text-[#181b26] font-medium rounded-full px-3 py-1 text-xs focus:outline-none focus:border-[#879fd0] shadow-2xs"
+                className="bg-white hover:bg-[#eef1f8] border border-[#cbd3e6] text-[#181b26] font-semibold rounded-full px-3 py-1 text-xs transition shadow-2xs truncate max-w-[160px]"
+                title="Buka World"
               >
-                {worlds.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
+                {activeWorld.name}
+              </button>
             ) : (
               <button
                 type="button"
@@ -2567,7 +2779,7 @@ export default function App() {
               </span>
             </div>
 
-            {/* Header Quick Create Button (Styled like the "Sign up" #6d7696 pill button in reference) */}
+            {/* Header Quick Create Button (Without New Article) */}
             <div className={activeNav === 'maps' || activeNav === 'timelines' ? 'hidden' : 'relative'}>
               <button
                 type="button"
@@ -2580,8 +2792,11 @@ export default function App() {
               {showQuickCreateMenu && (
                 <div className="absolute right-0 mt-2 w-48 bg-white border border-[#dce3f2] rounded-2xl shadow-2xl p-2 z-40 space-y-1">
                   {[
-                    { id: 'world', label: 'New World', icon: Globe },
-                    { id: 'article', label: 'New Article', icon: FileText },
+                    {
+                      id: 'world',
+                      label: worlds.length > 0 ? 'Edit World' : 'New World',
+                      icon: Globe
+                    },
                     { id: 'character', label: 'New Character', icon: Users },
                     { id: 'location', label: 'New Location', icon: MapPin },
                     { id: 'map', label: 'New Map', icon: MapIcon }
@@ -2631,7 +2846,7 @@ export default function App() {
               )}
             </button>
 
-            {/* Recent Activity Indicator (Styled like the top-left #494a52 / #8da7db icon buttons in reference) */}
+            {/* Recent Activity Indicator */}
             <button
               type="button"
               onClick={() => {
@@ -2659,7 +2874,7 @@ export default function App() {
 
             <span className="h-5 w-px bg-[#d5dced]" />
 
-            {/* User Profile Avatar & Account Controls (Matches "Log in" white pill with dark border in reference) */}
+            {/* User Profile Avatar & Account Controls */}
             {activeAccount ? (
               <button
                 type="button"
@@ -2668,13 +2883,21 @@ export default function App() {
                   setAuthStatusMessage('');
                   setShowAuthModal(true);
                 }}
-                className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-xs text-[#181b26] transition shadow-2xs"
-                title={`Masuk sebagai ${activeAccount.displayName} (${activeAccount.email}) — Klik untuk Kelola Akun & Cloud Sync`}
+                className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-xs text-[#181b26] transition shadow-2xs cursor-pointer"
+                title={`Profil: ${activeAccount.displayName} (${activeAccount.email}) — Klik untuk Personalisasi Profil & Cloud Sync`}
               >
-                <span className="w-6 h-6 rounded-full bg-[#6d7696] text-white font-bold flex items-center justify-center text-[11px]">
-                  {(activeAccount.displayName || 'U')[0].toUpperCase()}
-                </span>
-                <span className="hidden sm:inline font-semibold max-w-[96px] truncate">
+                {activeAccount.avatarUrl ? (
+                  <img
+                    src={activeAccount.avatarUrl}
+                    alt={activeAccount.displayName}
+                    className="w-6 h-6 rounded-full object-cover border border-[#879fd0]"
+                  />
+                ) : (
+                  <span className="w-6 h-6 rounded-full bg-[#6d7696] text-white font-bold flex items-center justify-center text-[11px]">
+                    {(activeAccount.displayName || 'U')[0].toUpperCase()}
+                  </span>
+                )}
+                <span className="hidden sm:inline font-semibold max-w-[110px] truncate">
                   {activeAccount.displayName}
                 </span>
               </button>
@@ -2684,10 +2907,11 @@ export default function App() {
                 onClick={() => {
                   setAuthErrorMessage('');
                   setAuthStatusMessage('');
+                  setAuthModalMode('login');
                   setShowAuthModal(true);
                 }}
                 className="px-4 py-1.5 rounded-full bg-white hover:bg-[#eef1f8] border border-[#494a52] text-xs font-bold text-[#181b26] transition shadow-2xs cursor-pointer"
-                title="Log in & Sinkronisasi Akun Lintas Perangkat"
+                title="Log in atau Buat Akun Baru"
               >
                 Log in
               </button>
@@ -3139,17 +3363,10 @@ export default function App() {
                       {[
                         {
                           id: 'world',
-                          label: 'New World',
+                          label: worlds.length > 0 ? 'Edit World' : 'New World',
                           iconSrc: '/assets/icons/world.png',
                           pillClass:
                             'bg-[#8da7db] hover:bg-[#7d98ce] border-[#8da7db] text-white shadow-[0_4px_12px_rgba(141,167,219,0.35)]'
-                        },
-                        {
-                          id: 'article',
-                          label: 'New Article',
-                          iconSrc: '/assets/icons/story.png',
-                          pillClass:
-                            'bg-[#7792c4] hover:bg-[#6984b8] border-[#7792c4] text-white shadow-[0_4px_12px_rgba(119,146,196,0.35)]'
                         },
                         {
                           id: 'character',
@@ -3640,35 +3857,54 @@ export default function App() {
               onSaveEntity={async (entityArt) => {
                 const thumbUrl = String(entityArt.templateValues?.ThumbnailUrl || '');
                 if (activeNav === 'worlds') {
+                  const canonicalWorldId = worlds[0]?.id || entityArt.id;
+                  const canonicalEntityArt: Article = {
+                    ...entityArt,
+                    id: canonicalWorldId,
+                    worldId: canonicalWorldId
+                  };
                   const syncedWorld: World = {
-                    id: entityArt.id,
+                    id: canonicalWorldId,
                     workspaceId: workspace.id,
                     universeId: activeWorld?.universeId || `uni-${Date.now()}`,
                     universeName: activeWorld?.universeName || 'Prime Universe',
-                    name: entityArt.title,
+                    name: canonicalEntityArt.title,
                     genre: 'Speculative Fiction',
                     tags: ['World'],
-                    synopsis: entityArt.content || entityArt.summary,
-                    announcement: entityArt.secretNotes || '',
+                    synopsis: canonicalEntityArt.content || canonicalEntityArt.summary,
+                    announcement: canonicalEntityArt.secretNotes || '',
                     visibility: 'private',
                     accentColor: '#368f66',
                     customCss: thumbUrl,
                     articleLayout: 'encyclopedia',
-                    updatedAt: entityArt.updatedAt
+                    updatedAt: canonicalEntityArt.updatedAt
                   };
-                  setWorlds((prev) =>
-                    prev.some((w) => w.id === syncedWorld.id)
-                      ? prev.map((w) => (w.id === syncedWorld.id ? syncedWorld : w))
-                      : [syncedWorld, ...prev]
-                  );
+                  // Strictly 1 World only
+                  setWorlds([syncedWorld]);
                   setActiveWorldId(syncedWorld.id);
-                  setArticles((prev) =>
-                    prev.some((a) => a.id === entityArt.id)
-                      ? prev.map((a) => (a.id === entityArt.id ? entityArt : a))
-                      : [entityArt, ...prev]
+                  setArticles((prev) => {
+                    const nonWorldArticles = prev.filter(
+                      (a) =>
+                        a.id !== canonicalWorldId &&
+                        a.category !== 'Worlds' &&
+                        a.templateType !== 'World / Setting'
+                    );
+                    return [canonicalEntityArt, ...nonWorldArticles];
+                  });
+                  recordOpenedItem(
+                    canonicalEntityArt.id,
+                    canonicalEntityArt.title,
+                    'World',
+                    'worlds',
+                    thumbUrl
                   );
-                  recordOpenedItem(entityArt.id, entityArt.title, 'World', 'worlds', thumbUrl);
-                  recordEditedItem(entityArt.id, entityArt.title, 'World', 'worlds', thumbUrl);
+                  recordEditedItem(
+                    canonicalEntityArt.id,
+                    canonicalEntityArt.title,
+                    'World',
+                    'worlds',
+                    thumbUrl
+                  );
 
                   if (currentUser) {
                     try {
@@ -4233,7 +4469,7 @@ export default function App() {
       </div>
 
       {/* ==================================================================== */}
-      {/* MODAL LOGIN AKUN & SINKRONISASI CLOUD LINTAS PERANGKAT               */}
+      {/* MODAL PROFIL, PERSONALISASI AKUN & SINKRONISASI CLOUD                */}
       {/* ==================================================================== */}
       {showAuthModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
@@ -4245,10 +4481,16 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-[#181b26]">
-                    {activeAccount ? 'Akun & Firebase Cloud Sync' : 'Log in Akun & Firebase Cloud Sync'}
+                    {activeAccount
+                      ? 'Profil Pengguna & Cloud Sync'
+                      : authModalMode === 'login'
+                      ? 'Masuk ke Akun (Log In)'
+                      : 'Buat Akun Baru (Registrasi)'}
                   </h3>
                   <p className="text-[11px] text-[#6d7696]">
-                    Sinkronisasi otomatis lintas browser &amp; perangkat (Firebase Firestore)
+                    {activeAccount
+                      ? 'Personalisasi profil & sinkronisasi otomatis lintas perangkat'
+                      : 'Sinkronisasi otomatis lintas browser & perangkat (Firebase Firestore)'}
                   </p>
                 </div>
               </div>
@@ -4261,17 +4503,17 @@ export default function App() {
               </button>
             </div>
 
-            <div className="p-6 space-y-4 max-h-[82vh] overflow-y-auto">
+            <div className="p-6 space-y-4 max-h-[84vh] overflow-y-auto">
               {/* Connection Badge */}
-              <div className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-[#f8f9fc] border border-[#dce3f2] text-xs">
+              <div className="flex items-center justify-between px-3.5 py-2 rounded-2xl bg-[#f8f9fc] border border-[#dce3f2] text-xs">
                 <span className="text-[#52586e] font-medium">Status Cloud Database:</span>
                 <span className="font-bold px-2.5 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-800 border border-emerald-300">
-                  Firebase Cloud Firestore Aktif
+                  Auto-Save Cloud Aktif
                 </span>
               </div>
 
               {authErrorMessage && (
-                <div className="p-3 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs leading-relaxed">
+                <div className="p-3 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs leading-relaxed font-medium">
                   {authErrorMessage}
                 </div>
               )}
@@ -4284,27 +4526,116 @@ export default function App() {
 
               {activeAccount ? (
                 <div className="space-y-4">
-                  <div className="p-4 rounded-2xl bg-[#f2f4f9] border border-[#cbd3e6] space-y-2">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-2xl bg-[#6d7696] text-white font-bold flex items-center justify-center text-base">
-                        {(activeAccount.displayName || 'U')[0].toUpperCase()}
+                  {/* Profile Personalization Form */}
+                  <form
+                    onSubmit={handleSaveUserProfile}
+                    className="p-4 rounded-2xl bg-[#f2f4f9] border border-[#cbd3e6] space-y-3.5"
+                  >
+                    <input
+                      ref={profileAvatarInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleProfileAvatarUpload}
+                      className="hidden"
+                    />
+                    <div className="flex items-center gap-3.5">
+                      <div className="relative group shrink-0">
+                        {profileAvatarUrl ? (
+                          <img
+                            src={profileAvatarUrl}
+                            alt={profileDisplayName || activeAccount.displayName}
+                            className="w-16 h-16 rounded-2xl object-cover border-2 border-[#879fd0] shadow-xs"
+                          />
+                        ) : (
+                          <div className="w-16 h-16 rounded-2xl bg-[#6d7696] text-white font-bold flex items-center justify-center text-xl border-2 border-[#879fd0]">
+                            {(profileDisplayName || activeAccount.displayName || 'U')[0].toUpperCase()}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => profileAvatarInputRef.current?.click()}
+                          className="mt-1.5 w-full text-[10px] font-semibold text-[#6d7696] hover:text-[#181b26] underline text-center block cursor-pointer"
+                        >
+                          Ubah Foto
+                        </button>
                       </div>
-                      <div className="min-w-0 flex-1">
+
+                      <div className="min-w-0 flex-1 space-y-1">
                         <div className="font-bold text-sm text-[#181b26] truncate">
-                          {activeAccount.displayName}
+                          {profileDisplayName || activeAccount.displayName}
+                        </div>
+                        <div className="text-[11px] font-semibold text-[#6d7696] truncate">
+                          {profileRoleTitle || 'Worldbuilder & Storyteller'}
                         </div>
                         <div className="text-xs text-[#52586e] truncate">
                           {activeAccount.email}
                         </div>
                       </div>
                     </div>
-                    <div className="pt-2 border-t border-[#dce3f2] flex items-center justify-between text-[11px] text-[#6d7696]">
-                      <span>ID Sinkronisasi:</span>
-                      <code className="font-mono bg-white px-2 py-0.5 rounded border border-[#dce3f2] text-[#181b26]">
-                        {activeAccount.uid.slice(0, 22)}...
-                      </code>
+
+                    <div className="pt-2 border-t border-[#dce3f2] space-y-2.5">
+                      <div className="text-xs font-bold text-[#181b26]">
+                        Personalisasi Profil
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-[#52586e] mb-1">
+                          Nama Display
+                        </label>
+                        <input
+                          type="text"
+                          value={profileDisplayName}
+                          onChange={(e) => setProfileDisplayName(e.target.value)}
+                          placeholder="Nama tampilan Anda..."
+                          className="w-full px-3 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-[#52586e] mb-1">
+                          Gelar / Role Kreator
+                        </label>
+                        <input
+                          type="text"
+                          value={profileRoleTitle}
+                          onChange={(e) => setProfileRoleTitle(e.target.value)}
+                          placeholder="Contoh: Worldbuilder & Penulis"
+                          className="w-full px-3 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-[#52586e] mb-1">
+                          Bio Singkat
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={profileBio}
+                          onChange={(e) => setProfileBio(e.target.value)}
+                          placeholder="Tulis bio atau catatan profil singkat Anda..."
+                          className="w-full px-3 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696] resize-none"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        {profileAvatarUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setProfileAvatarUrl('')}
+                            className="text-[11px] text-rose-600 hover:underline font-medium"
+                          >
+                            Hapus Foto Profil
+                          </button>
+                        )}
+                        <button
+                          type="submit"
+                          disabled={isSyncingCloud}
+                          className="ml-auto px-4 py-1.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold transition disabled:opacity-50 cursor-pointer"
+                        >
+                          {isSyncingCloud ? 'Menyimpan...' : 'Simpan Profil'}
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                  </form>
 
                   <div className="grid grid-cols-2 gap-2.5">
                     <button
@@ -4328,7 +4659,7 @@ export default function App() {
                   </div>
 
                   <p className="text-[11px] text-[#52586e] leading-relaxed">
-                    Tips: Masuk dengan <strong>Email/Username &amp; Password/PIN yang sama</strong> di browser atau perangkat lain (HP atau Laptop) untuk membuka data akun ini secara otomatis dari Firebase Cloud.
+                    Seluruh perubahan World, Story, Karakter, dan Profil Anda <strong>otomatis tersimpan (Auto-Save)</strong> ke Cloud setiap kali Anda mengedit.
                   </p>
 
                   <button
@@ -4341,6 +4672,40 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {/* Mode Switcher: Masuk (Log In) vs Buat Akun Baru */}
+                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[#eef1f8] border border-[#dce3f2]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('login');
+                        setAuthErrorMessage('');
+                        setAuthStatusMessage('');
+                      }}
+                      className={`py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        authModalMode === 'login'
+                          ? 'bg-[#6d7696] text-white shadow-xs'
+                          : 'text-[#52586e] hover:text-[#181b26]'
+                      }`}
+                    >
+                      Masuk (Log In)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('register');
+                        setAuthErrorMessage('');
+                        setAuthStatusMessage('');
+                      }}
+                      className={`py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+                        authModalMode === 'register'
+                          ? 'bg-[#6d7696] text-white shadow-xs'
+                          : 'text-[#52586e] hover:text-[#181b26]'
+                      }`}
+                    >
+                      Buat Akun Baru
+                    </button>
+                  </div>
+
                   <form onSubmit={handleAccountLoginSubmit} className="space-y-3">
                     <div>
                       <label className="block text-xs font-semibold text-[#181b26] mb-1">
@@ -4358,30 +4723,36 @@ export default function App() {
 
                     <div>
                       <label className="block text-xs font-semibold text-[#181b26] mb-1">
-                        Password / PIN Sinkronisasi (Min. 4 karakter)
+                        Password / PIN (Min. 4 karakter)
                       </label>
                       <input
                         type="password"
                         required
                         value={authPasswordInput}
                         onChange={(e) => setAuthPasswordInput(e.target.value)}
-                        placeholder="Masukkan password atau PIN akun Anda"
+                        placeholder={
+                          authModalMode === 'login'
+                            ? 'Masukkan password atau PIN akun Anda'
+                            : 'Buat password atau PIN baru (min. 4 karakter)'
+                        }
                         className="w-full px-3.5 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
                       />
                     </div>
 
-                    <div>
-                      <label className="block text-xs font-semibold text-[#6d7696] mb-1">
-                        Nama Tampilan (Opsional)
-                      </label>
-                      <input
-                        type="text"
-                        value={authDisplayNameInput}
-                        onChange={(e) => setAuthDisplayNameInput(e.target.value)}
-                        placeholder="Contoh: Arlangga"
-                        className="w-full px-3.5 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
-                      />
-                    </div>
+                    {authModalMode === 'register' && (
+                      <div>
+                        <label className="block text-xs font-semibold text-[#181b26] mb-1">
+                          Nama Display Profil
+                        </label>
+                        <input
+                          type="text"
+                          value={authDisplayNameInput}
+                          onChange={(e) => setAuthDisplayNameInput(e.target.value)}
+                          placeholder="Contoh: Arlangga"
+                          className="w-full px-3.5 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                        />
+                      </div>
+                    )}
 
                     <button
                       type="submit"
@@ -4389,8 +4760,10 @@ export default function App() {
                       className="w-full py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold shadow-sm transition disabled:opacity-50 cursor-pointer"
                     >
                       {isSyncingCloud
-                        ? 'Menyinkronkan ke Firebase...'
-                        : 'Masuk / Daftar Akun Firebase Cloud'}
+                        ? 'Memproses ke Cloud...'
+                        : authModalMode === 'login'
+                        ? 'Masuk ke Akun Saya'
+                        : 'Daftar & Buat Akun Baru'}
                     </button>
                   </form>
 
@@ -4410,7 +4783,15 @@ export default function App() {
                   </button>
 
                   <p className="text-[11px] text-[#6d7696] leading-relaxed">
-                    <strong>Catatan lintas perangkat:</strong> Gunakan <strong>Email + Password/PIN</strong> yang sama di Laptop maupun HP agar data otomatis tersinkronisasi melalui <strong>Firebase Cloud Firestore</strong>, dan saat berganti dari Akun A ke Akun B di perangkat yang sama, data masing-masing akun tetap terpisah.
+                    {authModalMode === 'login' ? (
+                      <>
+                        Belum punya akun? Klik tab <strong>Buat Akun Baru</strong> di atas. Jika salah memasukkan username/password pada mode Masuk, sistem tidak akan membuat akun baru secara otomatis.
+                      </>
+                    ) : (
+                      <>
+                        Setelah akun dibuat, Anda dapat mengatur <strong>Foto Profil, Nama Display, Gelar, dan Bio</strong> di menu Profil.
+                      </>
+                    )}
                   </p>
                 </div>
               )}
