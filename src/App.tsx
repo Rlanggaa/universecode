@@ -122,6 +122,9 @@ import {
   isSupabaseConfigured,
   saveWorkspaceBundleToSupabase,
   loadWorkspaceBundleFromSupabase,
+  deriveCloudAccountId,
+  CLOUD_ACCOUNT_SESSION_KEY,
+  CloudAccountSession,
   CloudWorkspaceBundle
 } from './lib/supabase';
 
@@ -212,7 +215,41 @@ export default function App() {
   };
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [cloudAccount, setCloudAccount] = useState<CloudAccountSession | null>(() => {
+    try {
+      const saved = localStorage.getItem(CLOUD_ACCOUNT_SESSION_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.uid === 'string' && parsed.uid) {
+          return parsed as CloudAccountSession;
+        }
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+    return null;
+  });
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authEmailInput, setAuthEmailInput] = useState<string>('');
+  const [authPasswordInput, setAuthPasswordInput] = useState<string>('');
+  const [authDisplayNameInput, setAuthDisplayNameInput] = useState<string>('');
+  const [authErrorMessage, setAuthErrorMessage] = useState<string>('');
+  const [authStatusMessage, setAuthStatusMessage] = useState<string>('');
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
   const [backupStatus, setBackupStatus] = useState<string>('Local-first Auto-Saved');
+
+  const activeAccount: CloudAccountSession | null = useMemo(() => {
+    if (cloudAccount) return cloudAccount;
+    if (currentUser) {
+      return {
+        uid: currentUser.uid,
+        email: currentUser.email || '',
+        displayName: currentUser.displayName || (currentUser.email ? currentUser.email.split('@')[0] : 'Creator'),
+        authMethod: 'google'
+      };
+    }
+    return null;
+  }, [cloudAccount, currentUser]);
 
   // ============================================================================
   // SECTION 3.2 FIRST-TIME EXPERIENCE:
@@ -461,11 +498,17 @@ export default function App() {
         recentlyEdited
       };
       localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
-      setBackupStatus('Local-first Auto-Saved');
+      if (activeAccount?.uid) {
+        localStorage.setItem(`${LOCAL_STORAGE_KEY}_${activeAccount.uid}`, JSON.stringify(payload));
+      }
+      setBackupStatus((prev) =>
+        prev.includes('Cloud') || prev.includes('Supabase') ? prev : 'Local-first Auto-Saved'
+      );
     } catch {
       // Quota or storage disabled
     }
   }, [
+    activeAccount?.uid,
     worlds,
     activeWorldId,
     universes,
@@ -755,7 +798,158 @@ export default function App() {
     }, 150);
   };
 
-  // Listen to Auth state & perform automatic 2-way Cloud Sync (Supabase + Firestore) across devices
+  const createEmptyWorkspaceBundle = (): CloudWorkspaceBundle => ({
+    worlds: [],
+    activeWorldId: '',
+    universes: [],
+    articles: [],
+    relationships: [],
+    maps: [],
+    timelineEvents: [],
+    manuscripts: [],
+    notes: [],
+    tasks: [],
+    digitalAssets: [],
+    recentlyOpened: [],
+    recentlyEdited: [],
+    timelineStudioRaw: '[]',
+    relationshipStudioRaw: '{}',
+    updatedAtIso: new Date().toISOString()
+  });
+
+  const buildCurrentWorkspaceBundle = (): CloudWorkspaceBundle => ({
+    worlds,
+    activeWorldId,
+    universes,
+    articles,
+    relationships,
+    maps,
+    timelineEvents,
+    manuscripts,
+    notes,
+    tasks,
+    digitalAssets,
+    recentlyOpened,
+    recentlyEdited,
+    timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
+    relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+    updatedAtIso: new Date().toISOString()
+  });
+
+  const syncAccountWorkspaceOnLogin = async (
+    account: CloudAccountSession,
+    firebaseUser: User | null,
+    isSwitchingFromAnotherAccount: boolean
+  ) => {
+    setIsSyncingCloud(true);
+    setAuthErrorMessage('');
+    try {
+      let cloudBundle: CloudWorkspaceBundle | null = null;
+      let supabaseErr: string | undefined;
+
+      if (isSupabaseConfigured()) {
+        const res = await loadWorkspaceBundleFromSupabase(account.uid);
+        cloudBundle = res.bundle;
+        supabaseErr = res.error;
+      }
+
+      if (!cloudBundle && firebaseUser) {
+        cloudBundle = await loadWorkspaceBundleFromFirestore(firebaseUser);
+      }
+
+      const hasCloudData =
+        cloudBundle &&
+        ((Array.isArray(cloudBundle.worlds) && cloudBundle.worlds.length > 0) ||
+          (Array.isArray(cloudBundle.articles) && cloudBundle.articles.length > 0) ||
+          (Array.isArray(cloudBundle.maps) && cloudBundle.maps.length > 0) ||
+          (Array.isArray(cloudBundle.timelineEvents) && cloudBundle.timelineEvents.length > 0));
+
+      if (hasCloudData && cloudBundle) {
+        hydrateFromCloudBundle(cloudBundle);
+        setBackupStatus(
+          isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Cloud Synced Across Devices'
+        );
+        setAuthStatusMessage('Data akun berhasil dimuat dari Cloud!');
+        return;
+      }
+
+      // Check per-account local cache on this device
+      const localAccountRaw = localStorage.getItem(`${LOCAL_STORAGE_KEY}_${account.uid}`);
+      if (localAccountRaw) {
+        try {
+          const parsedLocal = JSON.parse(localAccountRaw) as Partial<CloudWorkspaceBundle>;
+          const hasLocalAcctData =
+            (Array.isArray(parsedLocal.worlds) && parsedLocal.worlds.length > 0) ||
+            (Array.isArray(parsedLocal.articles) && parsedLocal.articles.length > 0);
+          if (hasLocalAcctData) {
+            hydrateFromCloudBundle(parsedLocal);
+            if (isSupabaseConfigured()) {
+              await saveWorkspaceBundleToSupabase(account.uid, account.email, {
+                ...createEmptyWorkspaceBundle(),
+                ...parsedLocal,
+                updatedAtIso: new Date().toISOString()
+              });
+            }
+            setBackupStatus(
+              isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Account Local Synced'
+            );
+            setAuthStatusMessage('Data akun berhasil dipulihkan dan disinkronkan!');
+            return;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // If switching from Account A -> Account B and Account B has no data yet, start Account B clean!
+      if (isSwitchingFromAnotherAccount) {
+        const emptyBundle = createEmptyWorkspaceBundle();
+        hydrateFromCloudBundle(emptyBundle);
+        if (isSupabaseConfigured()) {
+          await saveWorkspaceBundleToSupabase(account.uid, account.email, emptyBundle);
+        }
+        if (firebaseUser) {
+          await saveWorkspaceBundleToFirestore(firebaseUser, emptyBundle);
+        }
+        setBackupStatus(
+          isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Account Ready (Clean)'
+        );
+        setAuthStatusMessage('Akun baru aktif dengan workspace bersih.');
+      } else {
+        // First login from anonymous workspace: upload current work to this account
+        const initialBundle = buildCurrentWorkspaceBundle();
+        if (isSupabaseConfigured()) {
+          const saveRes = await saveWorkspaceBundleToSupabase(
+            account.uid,
+            account.email,
+            initialBundle
+          );
+          if (!saveRes.ok && saveRes.error) {
+            supabaseErr = saveRes.error;
+          }
+        }
+        if (firebaseUser) {
+          await saveWorkspaceBundleToFirestore(firebaseUser, initialBundle);
+        }
+        setBackupStatus(
+          isSupabaseConfigured() && !supabaseErr
+            ? 'Supabase Cloud Synced'
+            : 'Local + Account Active'
+        );
+        if (supabaseErr && isSupabaseConfigured()) {
+          setAuthErrorMessage(
+            `Login berhasil, namun sinkronisasi tabel Supabase belum siap (${supabaseErr}). Pastikan tabel user_workspaces sudah dibuat di SQL Editor Supabase.`
+          );
+        } else {
+          setAuthStatusMessage('Login berhasil! Workspace saat ini telah disimpan ke akun Anda.');
+        }
+      }
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // Listen to Firebase Auth state & restore saved CloudAccountSession on startup
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
@@ -767,98 +961,59 @@ export default function App() {
             'Worldbuilder',
             true
           );
-
-          // 1. Try pulling user's workspace bundle from Supabase first (if configured), then Firestore
-          let cloudBundle: CloudWorkspaceBundle | null = null;
-          if (isSupabaseConfigured()) {
-            cloudBundle = await loadWorkspaceBundleFromSupabase(user.uid);
-          }
-          if (!cloudBundle) {
-            cloudBundle = await loadWorkspaceBundleFromFirestore(user);
-          }
-
-          const hasCloudData =
-            cloudBundle &&
-            ((Array.isArray(cloudBundle.worlds) && cloudBundle.worlds.length > 0) ||
-              (Array.isArray(cloudBundle.articles) && cloudBundle.articles.length > 0));
-
-          if (hasCloudData && cloudBundle) {
-            hydrateFromCloudBundle(cloudBundle);
-            setBackupStatus(
-              isSupabaseConfigured()
-                ? 'Supabase + Cloud Synced'
-                : 'Cloud Synced Across Devices'
-            );
-          } else {
-            // No cloud data yet for this account: push current local workspace to Cloud
-            const initialBundle: CloudWorkspaceBundle = {
-              worlds,
-              activeWorldId,
-              universes,
-              articles,
-              relationships,
-              maps,
-              timelineEvents,
-              manuscripts,
-              notes,
-              tasks,
-              digitalAssets,
-              recentlyOpened,
-              recentlyEdited,
-              timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
-              relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
-              updatedAtIso: new Date().toISOString()
-            };
-            if (isSupabaseConfigured()) {
-              await saveWorkspaceBundleToSupabase(user.uid, user.email, initialBundle);
-            }
-            await saveWorkspaceBundleToFirestore(user, initialBundle);
-            setBackupStatus(
-              isSupabaseConfigured()
-                ? 'Supabase + Cloud Synced'
-                : 'Cloud Synced Across Devices'
-            );
-          }
         } catch {
-          setBackupStatus('Local-first Active');
+          // ignore firestore profile error
         }
+        const googleAcct: CloudAccountSession = {
+          uid: user.uid,
+          email: user.email || '',
+          displayName:
+            user.displayName || (user.email ? user.email.split('@')[0] : 'Creator'),
+          authMethod: 'google'
+        };
+        setCloudAccount(googleAcct);
+        try {
+          localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(googleAcct));
+        } catch {
+          // ignore
+        }
+        await syncAccountWorkspaceOnLogin(googleAcct, user, false);
       }
     });
+
+    // If user is logged in via Email + PIN/Password session, pull latest cloud data on load
+    if (cloudAccount && cloudAccount.authMethod === 'supabase-account') {
+      syncAccountWorkspaceOnLogin(cloudAccount, null, false);
+    }
+
     return () => unsub();
   }, []);
 
   // Automatically sync workspace changes to Cloud (Supabase & Firestore) whenever logged-in user edits data
   useEffect(() => {
-    if (!currentUser || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) return;
+    if (!activeAccount || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) return;
 
     const timer = window.setTimeout(async () => {
-      const bundle: CloudWorkspaceBundle = {
-        worlds,
-        activeWorldId,
-        universes,
-        articles,
-        relationships,
-        maps,
-        timelineEvents,
-        manuscripts,
-        notes,
-        tasks,
-        digitalAssets,
-        recentlyOpened,
-        recentlyEdited,
-        timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
-        relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
-        updatedAtIso: new Date().toISOString()
-      };
+      const bundle: CloudWorkspaceBundle = buildCurrentWorkspaceBundle();
 
       if (isSupabaseConfigured()) {
-        await saveWorkspaceBundleToSupabase(currentUser.uid, currentUser.email, bundle);
+        const res = await saveWorkspaceBundleToSupabase(
+          activeAccount.uid,
+          activeAccount.email,
+          bundle
+        );
+        if (res.ok) {
+          setBackupStatus('Supabase Cloud Synced');
+        }
       }
-      await saveWorkspaceBundleToFirestore(currentUser, bundle);
+      if (currentUser) {
+        await saveWorkspaceBundleToFirestore(currentUser, bundle);
+      }
     }, 1200);
 
     return () => window.clearTimeout(timer);
   }, [
+    activeAccount,
     currentUser,
     worlds,
     activeWorldId,
@@ -875,6 +1030,169 @@ export default function App() {
     recentlyEdited,
     subStudioTick
   ]);
+
+  const handleAccountLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthErrorMessage('');
+    setAuthStatusMessage('');
+
+    const trimmedEmail = authEmailInput.trim().toLowerCase();
+    const trimmedPass = authPasswordInput.trim();
+    if (!trimmedEmail || !trimmedPass) {
+      setAuthErrorMessage('Masukkan Email/Username dan Password/PIN Anda terlebih dahulu.');
+      return;
+    }
+    if (trimmedPass.length < 4) {
+      setAuthErrorMessage('Password atau PIN minimal 4 karakter.');
+      return;
+    }
+
+    const previousUid = activeAccount?.uid || null;
+    const derivedUid = await deriveCloudAccountId(trimmedEmail, trimmedPass);
+    const displayName =
+      authDisplayNameInput.trim() ||
+      (trimmedEmail.includes('@') ? trimmedEmail.split('@')[0] : trimmedEmail);
+
+    const newSession: CloudAccountSession = {
+      uid: derivedUid,
+      email: trimmedEmail,
+      displayName,
+      authMethod: 'supabase-account'
+    };
+
+    const isSwitchingAccount = Boolean(previousUid && previousUid !== derivedUid);
+    setCloudAccount(newSession);
+    try {
+      localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(newSession));
+    } catch {
+      // ignore
+    }
+
+    await syncAccountWorkspaceOnLogin(newSession, null, isSwitchingAccount);
+    setAuthPasswordInput('');
+  };
+
+  const handleGoogleLoginClick = async () => {
+    setAuthErrorMessage('');
+    setAuthStatusMessage('');
+    setIsSyncingCloud(true);
+    try {
+      await signInWithGoogle();
+      setAuthStatusMessage('Berhasil login dengan Google!');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (
+        msg.includes('unauthorized-domain') ||
+        msg.includes('popup') ||
+        msg.includes('operation-not-allowed')
+      ) {
+        setAuthErrorMessage(
+          'Login Popup Google diblokir pada domain eksternal ini (auth/unauthorized-domain). Silakan gunakan form Login Akun Cepat (Email + Password/PIN) di atas yang langsung berfungsi di Vercel, Cloudflare, HP, dan Laptop tanpa batasan domain!'
+        );
+      } else {
+        setAuthErrorMessage(
+          `Gagal login Google (${msg.slice(0, 120)}). Silakan gunakan Login Akun Cepat (Email + Password/PIN) di atas.`
+        );
+      }
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  const handleManualCloudPush = async () => {
+    if (!activeAccount) return;
+    setIsSyncingCloud(true);
+    setAuthErrorMessage('');
+    setAuthStatusMessage('');
+    try {
+      const bundle = buildCurrentWorkspaceBundle();
+      if (isSupabaseConfigured()) {
+        const res = await saveWorkspaceBundleToSupabase(
+          activeAccount.uid,
+          activeAccount.email,
+          bundle
+        );
+        if (!res.ok) {
+          setAuthErrorMessage(
+            res.error ||
+              'Gagal menyimpan ke Supabase. Pastikan VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, dan tabel user_workspaces sudah benar.'
+          );
+          return;
+        }
+      }
+      if (currentUser) {
+        await saveWorkspaceBundleToFirestore(currentUser, bundle);
+      }
+      setBackupStatus(
+        isSupabaseConfigured() ? 'Supabase Cloud Synced' : 'Cloud Synced Across Devices'
+      );
+      setAuthStatusMessage('Seluruh data workspace berhasil disimpan ke Cloud!');
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  const handleManualCloudPull = async () => {
+    if (!activeAccount) return;
+    setIsSyncingCloud(true);
+    setAuthErrorMessage('');
+    setAuthStatusMessage('');
+    try {
+      let bundle: CloudWorkspaceBundle | null = null;
+      if (isSupabaseConfigured()) {
+        const res = await loadWorkspaceBundleFromSupabase(activeAccount.uid);
+        if (res.error) {
+          setAuthErrorMessage(res.error);
+          return;
+        }
+        bundle = res.bundle;
+      }
+      if (!bundle && currentUser) {
+        bundle = await loadWorkspaceBundleFromFirestore(currentUser);
+      }
+      if (bundle) {
+        hydrateFromCloudBundle(bundle);
+        setAuthStatusMessage('Data terbaru dari Cloud berhasil dimuat ke perangkat ini!');
+      } else {
+        setAuthErrorMessage('Belum ada data tersimpan di Cloud untuk akun ini.');
+      }
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  const handleSignOutAll = async () => {
+    setAuthErrorMessage('');
+    setAuthStatusMessage('');
+    if (activeAccount?.uid) {
+      try {
+        const currentBundle = buildCurrentWorkspaceBundle();
+        localStorage.setItem(
+          `${LOCAL_STORAGE_KEY}_${activeAccount.uid}`,
+          JSON.stringify(currentBundle)
+        );
+      } catch {
+        // ignore
+      }
+    }
+    setCloudAccount(null);
+    try {
+      localStorage.removeItem(CLOUD_ACCOUNT_SESSION_KEY);
+    } catch {
+      // ignore
+    }
+    if (currentUser) {
+      try {
+        await signOutUser();
+      } catch {
+        // ignore
+      }
+    }
+    // Reset local active workspace so switching to another account on the same device doesn't leak data
+    hydrateFromCloudBundle(createEmptyWorkspaceBundle());
+    setBackupStatus('Local-first Auto-Saved');
+    setAuthStatusMessage('Anda telah keluar (Log out). Workspace di perangkat ini telah dibersihkan.');
+  };
 
   const activeWorld = useMemo(
     () => worlds.find((w) => w.id === activeWorldId) || worlds[0] || null,
@@ -2182,23 +2500,34 @@ export default function App() {
             <span className="h-5 w-px bg-[#d5dced]" />
 
             {/* User Profile Avatar & Account Controls (Matches "Log in" white pill with dark border in reference) */}
-            {currentUser ? (
+            {activeAccount ? (
               <button
                 type="button"
-                onClick={() => signOutUser()}
-                className="flex items-center gap-2 text-xs text-[#181b26] hover:text-[#6d7696]"
-                title="Click to Sign Out"
+                onClick={() => {
+                  setAuthErrorMessage('');
+                  setAuthStatusMessage('');
+                  setShowAuthModal(true);
+                }}
+                className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-xs text-[#181b26] transition shadow-2xs"
+                title={`Masuk sebagai ${activeAccount.displayName} (${activeAccount.email}) — Klik untuk Kelola Akun & Cloud Sync`}
               >
-                <span className="w-8 h-8 rounded-xl bg-[#6d7696] border border-[#879fd0] text-white font-bold flex items-center justify-center text-xs">
-                  {(currentUser.displayName || 'V')[0].toUpperCase()}
+                <span className="w-6 h-6 rounded-full bg-[#6d7696] text-white font-bold flex items-center justify-center text-[11px]">
+                  {(activeAccount.displayName || 'U')[0].toUpperCase()}
+                </span>
+                <span className="hidden sm:inline font-semibold max-w-[96px] truncate">
+                  {activeAccount.displayName}
                 </span>
               </button>
             ) : (
               <button
                 type="button"
-                onClick={() => signInWithGoogle()}
-                className="px-4 py-1.5 rounded-full bg-white hover:bg-[#eef1f8] border border-[#494a52] text-xs font-bold text-[#181b26] transition shadow-2xs"
-                title="Sign In / Sync Account"
+                onClick={() => {
+                  setAuthErrorMessage('');
+                  setAuthStatusMessage('');
+                  setShowAuthModal(true);
+                }}
+                className="px-4 py-1.5 rounded-full bg-white hover:bg-[#eef1f8] border border-[#494a52] text-xs font-bold text-[#181b26] transition shadow-2xs cursor-pointer"
+                title="Log in & Sinkronisasi Akun Lintas Perangkat"
               >
                 Log in
               </button>
@@ -3742,6 +4071,199 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* ==================================================================== */}
+      {/* MODAL LOGIN AKUN & SINKRONISASI CLOUD LINTAS PERANGKAT               */}
+      {/* ==================================================================== */}
+      {showAuthModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white border border-[#cbd3e6] shadow-2xl overflow-hidden text-[#181b26]">
+            <div className="px-6 py-4 bg-[#f2f4f9] border-b border-[#dce3f2] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-[#6d7696] text-white flex items-center justify-center font-bold text-sm">
+                  <Database className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#181b26]">
+                    {activeAccount ? 'Akun & Cloud Sync' : 'Log in Akun & Cloud Sync'}
+                  </h3>
+                  <p className="text-[11px] text-[#6d7696]">
+                    Sinkronisasi otomatis antar perangkat (Vercel &amp; Supabase)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAuthModal(false)}
+                className="w-7 h-7 rounded-full hover:bg-[#e6ecf7] text-[#6d7696] hover:text-[#181b26] flex items-center justify-center text-xs font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 max-h-[82vh] overflow-y-auto">
+              {/* Connection Badge */}
+              <div className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-[#f8f9fc] border border-[#dce3f2] text-xs">
+                <span className="text-[#52586e] font-medium">Status Cloud Database:</span>
+                <span
+                  className={`font-bold px-2.5 py-0.5 rounded-full text-[11px] ${
+                    isSupabaseConfigured()
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      : 'bg-amber-100 text-amber-800 border border-amber-300'
+                  }`}
+                >
+                  {isSupabaseConfigured() ? 'Supabase Terhubung' : 'Mode Penyimpanan Lokal'}
+                </span>
+              </div>
+
+              {authErrorMessage && (
+                <div className="p-3 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs leading-relaxed">
+                  {authErrorMessage}
+                </div>
+              )}
+
+              {authStatusMessage && (
+                <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium leading-relaxed">
+                  {authStatusMessage}
+                </div>
+              )}
+
+              {activeAccount ? (
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-[#f2f4f9] border border-[#cbd3e6] space-y-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-2xl bg-[#6d7696] text-white font-bold flex items-center justify-center text-base">
+                        {(activeAccount.displayName || 'U')[0].toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-sm text-[#181b26] truncate">
+                          {activeAccount.displayName}
+                        </div>
+                        <div className="text-xs text-[#52586e] truncate">
+                          {activeAccount.email}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="pt-2 border-t border-[#dce3f2] flex items-center justify-between text-[11px] text-[#6d7696]">
+                      <span>ID Sinkronisasi:</span>
+                      <code className="font-mono bg-white px-2 py-0.5 rounded border border-[#dce3f2] text-[#181b26]">
+                        {activeAccount.uid.slice(0, 22)}...
+                      </code>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      disabled={isSyncingCloud}
+                      onClick={handleManualCloudPush}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{isSyncingCloud ? 'Menyimpan...' : 'Simpan ke Cloud'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSyncingCloud}
+                      onClick={handleManualCloudPull}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-[#181b26] text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>{isSyncingCloud ? 'Memuat...' : 'Muat dari Cloud'}</span>
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-[#52586e] leading-relaxed">
+                    Tips: Masuk dengan <strong>Email/Username &amp; Password/PIN yang sama</strong> di perangkat lain (HP atau Laptop) untuk membuka data akun ini secara otomatis.
+                  </p>
+
+                  <button
+                    type="button"
+                    onClick={handleSignOutAll}
+                    className="w-full py-2.5 rounded-xl border border-red-300 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-bold transition cursor-pointer"
+                  >
+                    Log out / Ganti Akun Lain
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <form onSubmit={handleAccountLoginSubmit} className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#181b26] mb-1">
+                        Email atau Username Akun
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={authEmailInput}
+                        onChange={(e) => setAuthEmailInput(e.target.value)}
+                        placeholder="contoh: nama@email.com atau username"
+                        className="w-full px-3.5 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-[#181b26] mb-1">
+                        Password / PIN Sinkronisasi (Min. 4 karakter)
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        value={authPasswordInput}
+                        onChange={(e) => setAuthPasswordInput(e.target.value)}
+                        placeholder="Masukkan password atau PIN akun Anda"
+                        className="w-full px-3.5 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-[#6d7696] mb-1">
+                        Nama Tampilan (Opsional)
+                      </label>
+                      <input
+                        type="text"
+                        value={authDisplayNameInput}
+                        onChange={(e) => setAuthDisplayNameInput(e.target.value)}
+                        placeholder="Contoh: Arlangga"
+                        className="w-full px-3.5 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isSyncingCloud}
+                      className="w-full py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold shadow-sm transition disabled:opacity-50 cursor-pointer"
+                    >
+                      {isSyncingCloud
+                        ? 'Menyinkronkan Akun...'
+                        : 'Masuk / Daftar Akun Cloud Sync'}
+                    </button>
+                  </form>
+
+                  <div className="relative flex py-1 items-center">
+                    <div className="grow border-t border-[#dce3f2]" />
+                    <span className="shrink mx-3 text-[11px] text-[#6d7696]">atau</span>
+                    <div className="grow border-t border-[#dce3f2]" />
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isSyncingCloud}
+                    onClick={handleGoogleLoginClick}
+                    className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-[#f2f4f9] border border-[#cbd3e6] text-[#181b26] text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
+                  >
+                    <span>Login dengan Google</span>
+                  </button>
+
+                  <p className="text-[11px] text-[#6d7696] leading-relaxed">
+                    <strong>Catatan lintas perangkat:</strong> Gunakan <strong>Email + Password/PIN</strong> yang sama di Laptop maupun HP agar data otomatis tersinkronisasi melalui Supabase, dan saat berganti dari Akun A ke Akun B di perangkat yang sama, data masing-masing akun tetap terpisah.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
