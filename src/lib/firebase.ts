@@ -10,8 +10,10 @@ import {
 import {
   getFirestore,
   doc,
+  getDoc,
   getDocFromServer,
   setDoc,
+  updateDoc,
   deleteDoc,
   collection,
   query,
@@ -21,6 +23,7 @@ import {
   Unsubscribe
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { CloudWorkspaceBundle } from './supabase';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -124,24 +127,34 @@ export async function syncUserProfileToFirestore(
   displayName: string,
   roleTitle: string,
   onboardingCompleted: boolean,
-  isExisting: boolean
+  _isExisting?: boolean
 ): Promise<void> {
   const uid = sanitizeId(user.uid);
   const path = `users/${uid}`;
+  const ref = doc(db, 'users', uid);
+  let exists = false;
   try {
-    const payload: Record<string, unknown> = {
-      uid,
-      displayName: truncateString(displayName || user.displayName || 'Creator', 100, 1),
-      roleTitle: truncateString(roleTitle || 'Worldbuilder & IP Architect', 120, 1),
-      onboardingCompleted: Boolean(onboardingCompleted),
-      updatedAt: serverTimestamp(),
-    };
-    if (!isExisting) {
-      payload.createdAt = serverTimestamp();
+    const snap = await getDoc(ref);
+    exists = snap.exists();
+    if (exists) {
+      await updateDoc(ref, {
+        displayName: truncateString(displayName || user.displayName || 'Creator', 100, 1),
+        roleTitle: truncateString(roleTitle || 'Worldbuilder & IP Architect', 120, 1),
+        onboardingCompleted: Boolean(onboardingCompleted),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(ref, {
+        uid,
+        displayName: truncateString(displayName || user.displayName || 'Creator', 100, 1),
+        roleTitle: truncateString(roleTitle || 'Worldbuilder & IP Architect', 120, 1),
+        onboardingCompleted: Boolean(onboardingCompleted),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     }
-    await setDoc(doc(db, 'users', uid), payload, { merge: isExisting });
   } catch (error) {
-    handleFirestoreError(error, isExisting ? OperationType.UPDATE : OperationType.CREATE, path);
+    handleFirestoreError(error, exists ? OperationType.UPDATE : OperationType.CREATE, path);
   }
 }
 
@@ -151,24 +164,35 @@ export async function syncWorkspaceToFirestore(
   name: string,
   description: string,
   visibility: 'private' | 'public' | 'shared',
-  isExisting: boolean
+  _isExisting?: boolean
 ): Promise<void> {
   const safeId = sanitizeId(workspaceId);
   const path = `workspaces/${safeId}`;
+  const ref = doc(db, 'workspaces', safeId);
+  let exists = false;
   try {
-    const payload: Record<string, unknown> = {
-      ownerId: sanitizeId(user.uid),
-      name: truncateString(name, 120, 1),
-      description: truncateString(description, 1000, 0),
-      visibility: ['private', 'public', 'shared'].includes(visibility) ? visibility : 'private',
-      updatedAt: serverTimestamp(),
-    };
-    if (!isExisting) {
-      payload.createdAt = serverTimestamp();
+    const snap = await getDoc(ref);
+    exists = snap.exists();
+    const validVis = ['private', 'public', 'shared'].includes(visibility) ? visibility : 'private';
+    if (exists) {
+      await updateDoc(ref, {
+        name: truncateString(name, 120, 1),
+        description: truncateString(description, 1000, 0),
+        visibility: validVis,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(ref, {
+        ownerId: sanitizeId(user.uid),
+        name: truncateString(name, 120, 1),
+        description: truncateString(description, 1000, 0),
+        visibility: validVis,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     }
-    await setDoc(doc(db, 'workspaces', safeId), payload, { merge: isExisting });
   } catch (error) {
-    handleFirestoreError(error, isExisting ? OperationType.UPDATE : OperationType.CREATE, path);
+    handleFirestoreError(error, exists ? OperationType.UPDATE : OperationType.CREATE, path);
   }
 }
 
@@ -181,28 +205,41 @@ export async function syncWorldToFirestore(
   genre: string,
   synopsis: string,
   visibility: 'private' | 'public' | 'password',
-  isExisting: boolean
+  _isExisting?: boolean
 ): Promise<void> {
   const safeWorldId = sanitizeId(worldId);
   const safeWorkspaceId = sanitizeId(workspaceId);
   const path = `worlds/${safeWorldId}`;
+  const ref = doc(db, 'worlds', safeWorldId);
+  let exists = false;
   try {
-    const payload: Record<string, unknown> = {
-      ownerId: sanitizeId(user.uid),
-      workspaceId: safeWorkspaceId,
-      name: truncateString(name, 120, 1),
-      universe: truncateString(universe || 'Prime Universe', 120, 1),
-      genre: truncateString(genre || 'Speculative Fiction', 120, 1),
-      synopsis: truncateString(synopsis, 2000, 0),
-      visibility: ['private', 'public', 'password'].includes(visibility) ? visibility : 'private',
-      updatedAt: serverTimestamp(),
-    };
-    if (!isExisting) {
-      payload.createdAt = serverTimestamp();
+    const snap = await getDoc(ref);
+    exists = snap.exists();
+    const validVis = ['private', 'public', 'password'].includes(visibility) ? visibility : 'private';
+    if (exists) {
+      await updateDoc(ref, {
+        name: truncateString(name, 120, 1),
+        universe: truncateString(universe || 'Prime Universe', 120, 1),
+        genre: truncateString(genre || 'Speculative Fiction', 120, 1),
+        synopsis: truncateString(synopsis, 2000, 0),
+        visibility: validVis,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(ref, {
+        ownerId: sanitizeId(user.uid),
+        workspaceId: safeWorkspaceId,
+        name: truncateString(name, 120, 1),
+        universe: truncateString(universe || 'Prime Universe', 120, 1),
+        genre: truncateString(genre || 'Speculative Fiction', 120, 1),
+        synopsis: truncateString(synopsis, 2000, 0),
+        visibility: validVis,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     }
-    await setDoc(doc(db, 'worlds', safeWorldId), payload, { merge: isExisting });
   } catch (error) {
-    handleFirestoreError(error, isExisting ? OperationType.UPDATE : OperationType.CREATE, path);
+    handleFirestoreError(error, exists ? OperationType.UPDATE : OperationType.CREATE, path);
   }
 }
 
@@ -217,30 +254,117 @@ export async function syncArticleToFirestore(
   content: string,
   status: 'draft' | 'published' | 'archived',
   visibility: 'public' | 'private' | 'secret',
-  isExisting: boolean
+  _isExisting?: boolean
 ): Promise<void> {
   const safeArticleId = sanitizeId(articleId);
   const safeWorldId = sanitizeId(worldId);
   const path = `articles/${safeArticleId}`;
+  const ref = doc(db, 'articles', safeArticleId);
+  let exists = false;
   try {
-    const payload: Record<string, unknown> = {
-      ownerId: sanitizeId(user.uid),
-      worldId: safeWorldId,
-      title: truncateString(title, 200, 1),
-      templateType: truncateString(templateType || 'Generic Article', 64, 1),
-      category: truncateString(category || 'Lore', 64, 1),
-      summary: truncateString(summary, 1000, 0),
-      content: truncateString(content, 100000, 0),
-      status: ['draft', 'published', 'archived'].includes(status) ? status : 'draft',
-      visibility: ['public', 'private', 'secret'].includes(visibility) ? visibility : 'private',
-      updatedAt: serverTimestamp(),
-    };
-    if (!isExisting) {
-      payload.createdAt = serverTimestamp();
+    const snap = await getDoc(ref);
+    exists = snap.exists();
+    const validStatus = ['draft', 'published', 'archived'].includes(status) ? status : 'draft';
+    const validVis = ['public', 'private', 'secret'].includes(visibility) ? visibility : 'private';
+    if (exists) {
+      await updateDoc(ref, {
+        title: truncateString(title, 200, 1),
+        templateType: truncateString(templateType || 'Generic Article', 64, 1),
+        category: truncateString(category || 'Lore', 64, 1),
+        summary: truncateString(summary, 1000, 0),
+        content: truncateString(content, 100000, 0),
+        status: validStatus,
+        visibility: validVis,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(ref, {
+        ownerId: sanitizeId(user.uid),
+        worldId: safeWorldId,
+        title: truncateString(title, 200, 1),
+        templateType: truncateString(templateType || 'Generic Article', 64, 1),
+        category: truncateString(category || 'Lore', 64, 1),
+        summary: truncateString(summary, 1000, 0),
+        content: truncateString(content, 100000, 0),
+        status: validStatus,
+        visibility: validVis,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     }
-    await setDoc(doc(db, 'articles', safeArticleId), payload, { merge: isExisting });
   } catch (error) {
-    handleFirestoreError(error, isExisting ? OperationType.UPDATE : OperationType.CREATE, path);
+    handleFirestoreError(error, exists ? OperationType.UPDATE : OperationType.CREATE, path);
+  }
+}
+
+export async function saveWorkspaceBundleToFirestore(
+  user: User,
+  bundle: CloudWorkspaceBundle
+): Promise<boolean> {
+  const uid = sanitizeId(user.uid);
+  const wsId = sanitizeId(`ws-${uid}`);
+  const worldId = sanitizeId(`cloud-world-${uid}`);
+  const bundleDocId = sanitizeId(`cloud-bundle-${uid}`);
+
+  try {
+    await syncWorkspaceToFirestore(
+      user,
+      wsId,
+      'Cloud Synchronized Workspace',
+      'Cross-device workspace snapshot',
+      'private'
+    );
+    await syncWorldToFirestore(
+      user,
+      worldId,
+      wsId,
+      'Primary Cloud World',
+      'Prime Universe',
+      'Speculative Fiction',
+      'Cloud sync container',
+      'private'
+    );
+
+    const serialized = JSON.stringify(bundle);
+    // Firestore rule allows up to 100,000 chars per article content
+    if (serialized.length <= 99500) {
+      await syncArticleToFirestore(
+        user,
+        bundleDocId,
+        worldId,
+        'Workspace Cloud Snapshot',
+        'System Snapshot',
+        'System',
+        bundle.updatedAtIso || new Date().toISOString(),
+        serialized,
+        'published',
+        'private'
+      );
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error('Firestore cloud bundle save warning:', err);
+    return false;
+  }
+}
+
+export async function loadWorkspaceBundleFromFirestore(
+  user: User
+): Promise<CloudWorkspaceBundle | null> {
+  const uid = sanitizeId(user.uid);
+  const bundleDocId = sanitizeId(`cloud-bundle-${uid}`);
+  try {
+    const snap = await getDoc(doc(db, 'articles', bundleDocId));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    if (data && typeof data.content === 'string' && data.content.startsWith('{')) {
+      return JSON.parse(data.content) as CloudWorkspaceBundle;
+    }
+    return null;
+  } catch (err) {
+    console.error('Firestore cloud bundle load warning:', err);
+    return null;
   }
 }
 
@@ -270,3 +394,4 @@ export function subscribeUserArticles(
     }
   );
 }
+

@@ -114,8 +114,16 @@ import {
   syncWorkspaceToFirestore,
   syncWorldToFirestore,
   syncArticleToFirestore,
+  saveWorkspaceBundleToFirestore,
+  loadWorkspaceBundleFromFirestore,
   User
 } from './lib/firebase';
+import {
+  isSupabaseConfigured,
+  saveWorkspaceBundleToSupabase,
+  loadWorkspaceBundleFromSupabase,
+  CloudWorkspaceBundle
+} from './lib/supabase';
 
 type PrimaryNavId =
   | 'dashboard'
@@ -376,6 +384,8 @@ export default function App() {
   const [storyTitle, setStoryTitle] = useState<string>('');
   const [storySavedToast, setStorySavedToast] = useState<boolean>(false);
   const [showStoryAdvancedWiki, setShowStoryAdvancedWiki] = useState<boolean>(false);
+  const backupImportInputRef = useRef<HTMLInputElement | null>(null);
+  const isHydratingCloudRef = useRef<boolean>(false);
 
   // ============================================================================
   // GLOBAL UNDO (Ctrl+Z) & REDO (Ctrl+Shift+Z) + UNIVERSAL AUTO-SAVE ENGINE
@@ -706,7 +716,46 @@ export default function App() {
     return () => window.removeEventListener('keydown', onGlobalKeyDown);
   });
 
-  // Listen to Firebase Auth state
+  // Helper to apply a loaded Cloud or JSON bundle into state & localStorage
+  const hydrateFromCloudBundle = (bundle: Partial<CloudWorkspaceBundle>) => {
+    isHydratingCloudRef.current = true;
+    if (Array.isArray(bundle.worlds)) setWorlds(bundle.worlds as World[]);
+    if (typeof bundle.activeWorldId === 'string') setActiveWorldId(bundle.activeWorldId);
+    if (Array.isArray(bundle.universes)) setUniverses(bundle.universes as Universe[]);
+    if (Array.isArray(bundle.articles)) setArticles(bundle.articles as Article[]);
+    if (Array.isArray(bundle.relationships))
+      setRelationships(bundle.relationships as EntityRelationship[]);
+    if (Array.isArray(bundle.maps)) setMaps(bundle.maps as WorldMap[]);
+    if (Array.isArray(bundle.timelineEvents))
+      setTimelineEvents(bundle.timelineEvents as TimelineEvent[]);
+    if (Array.isArray(bundle.manuscripts)) setManuscripts(bundle.manuscripts as Manuscript[]);
+    if (Array.isArray(bundle.notes)) setNotes(bundle.notes as NotebookNote[]);
+    if (Array.isArray(bundle.tasks)) setTasks(bundle.tasks as ProjectTask[]);
+    if (Array.isArray(bundle.digitalAssets))
+      setDigitalAssets(bundle.digitalAssets as DigitalAsset[]);
+    if (Array.isArray(bundle.recentlyOpened))
+      setRecentlyOpened(bundle.recentlyOpened as RecentActivityItem[]);
+    if (Array.isArray(bundle.recentlyEdited))
+      setRecentlyEdited(bundle.recentlyEdited as RecentActivityItem[]);
+
+    try {
+      if (typeof bundle.timelineStudioRaw === 'string') {
+        localStorage.setItem(LOCAL_TIMELINES_STORAGE_KEY, bundle.timelineStudioRaw);
+      }
+      if (typeof bundle.relationshipStudioRaw === 'string') {
+        localStorage.setItem(LOCAL_RELATIONSHIP_STUDIO_KEY, bundle.relationshipStudioRaw);
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    setHistoryRevision((r) => r + 1);
+    window.setTimeout(() => {
+      isHydratingCloudRef.current = false;
+    }, 150);
+  };
+
+  // Listen to Auth state & perform automatic 2-way Cloud Sync (Supabase + Firestore) across devices
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
@@ -716,25 +765,116 @@ export default function App() {
             user,
             user.displayName || 'Creator',
             'Worldbuilder',
-            true,
-            false
+            true
           );
-          await syncWorkspaceToFirestore(
-            user,
-            workspace.id,
-            workspace.name,
-            workspace.description,
-            workspace.visibility,
-            false
-          );
-          setBackupStatus('Local-first + Cloud Synced');
+
+          // 1. Try pulling user's workspace bundle from Supabase first (if configured), then Firestore
+          let cloudBundle: CloudWorkspaceBundle | null = null;
+          if (isSupabaseConfigured()) {
+            cloudBundle = await loadWorkspaceBundleFromSupabase(user.uid);
+          }
+          if (!cloudBundle) {
+            cloudBundle = await loadWorkspaceBundleFromFirestore(user);
+          }
+
+          const hasCloudData =
+            cloudBundle &&
+            ((Array.isArray(cloudBundle.worlds) && cloudBundle.worlds.length > 0) ||
+              (Array.isArray(cloudBundle.articles) && cloudBundle.articles.length > 0));
+
+          if (hasCloudData && cloudBundle) {
+            hydrateFromCloudBundle(cloudBundle);
+            setBackupStatus(
+              isSupabaseConfigured()
+                ? 'Supabase + Cloud Synced'
+                : 'Cloud Synced Across Devices'
+            );
+          } else {
+            // No cloud data yet for this account: push current local workspace to Cloud
+            const initialBundle: CloudWorkspaceBundle = {
+              worlds,
+              activeWorldId,
+              universes,
+              articles,
+              relationships,
+              maps,
+              timelineEvents,
+              manuscripts,
+              notes,
+              tasks,
+              digitalAssets,
+              recentlyOpened,
+              recentlyEdited,
+              timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
+              relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+              updatedAtIso: new Date().toISOString()
+            };
+            if (isSupabaseConfigured()) {
+              await saveWorkspaceBundleToSupabase(user.uid, user.email, initialBundle);
+            }
+            await saveWorkspaceBundleToFirestore(user, initialBundle);
+            setBackupStatus(
+              isSupabaseConfigured()
+                ? 'Supabase + Cloud Synced'
+                : 'Cloud Synced Across Devices'
+            );
+          }
         } catch {
           setBackupStatus('Local-first Active');
         }
       }
     });
     return () => unsub();
-  }, [workspace.id, workspace.name, workspace.description, workspace.visibility]);
+  }, []);
+
+  // Automatically sync workspace changes to Cloud (Supabase & Firestore) whenever logged-in user edits data
+  useEffect(() => {
+    if (!currentUser || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) return;
+
+    const timer = window.setTimeout(async () => {
+      const bundle: CloudWorkspaceBundle = {
+        worlds,
+        activeWorldId,
+        universes,
+        articles,
+        relationships,
+        maps,
+        timelineEvents,
+        manuscripts,
+        notes,
+        tasks,
+        digitalAssets,
+        recentlyOpened,
+        recentlyEdited,
+        timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
+        relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+        updatedAtIso: new Date().toISOString()
+      };
+
+      if (isSupabaseConfigured()) {
+        await saveWorkspaceBundleToSupabase(currentUser.uid, currentUser.email, bundle);
+      }
+      await saveWorkspaceBundleToFirestore(currentUser, bundle);
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    currentUser,
+    worlds,
+    activeWorldId,
+    universes,
+    articles,
+    relationships,
+    maps,
+    timelineEvents,
+    manuscripts,
+    notes,
+    tasks,
+    digitalAssets,
+    recentlyOpened,
+    recentlyEdited,
+    subStudioTick
+  ]);
 
   const activeWorld = useMemo(
     () => worlds.find((w) => w.id === activeWorldId) || worlds[0] || null,
@@ -1513,6 +1653,7 @@ export default function App() {
       exportedAt: new Date().toISOString(),
       platform: 'Alt-Universe Personal Worldbuilding & Creative Knowledge Workspace',
       workspace,
+      activeWorldId,
       universes,
       worlds,
       articles,
@@ -1529,7 +1670,11 @@ export default function App() {
       generators,
       campaigns,
       ipAssets,
-      digitalAssets
+      digitalAssets,
+      recentlyOpened,
+      recentlyEdited,
+      timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
+      relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY)
     };
     const blob = new Blob([JSON.stringify(archive, null, 2)], {
       type: 'application/json;charset=utf-8'
@@ -1540,6 +1685,25 @@ export default function App() {
     a.download = `alt-universe-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleImportFullWorkspaceJson = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') return;
+      try {
+        const parsed = JSON.parse(reader.result);
+        hydrateFromCloudBundle(parsed);
+        setHistoryToastText('Backup JSON Dimuat');
+        window.setTimeout(() => setHistoryToastText(''), 2200);
+      } catch {
+        // Ignore invalid JSON file
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   // Main Left Sidebar Groups:
@@ -2584,10 +2748,27 @@ export default function App() {
                       Reset to Empty First-Time State
                     </button>
                   )}
+                  <input
+                    ref={backupImportInputRef}
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={handleImportFullWorkspaceJson}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => backupImportInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-white hover:bg-[#e6ecf7] border border-[#cbd3e6] text-[#181b26] font-semibold transition shadow-xs cursor-pointer"
+                    title="Muat file Backup JSON dari perangkat lain"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-[#5b74a8]" />
+                    <span>Import JSON</span>
+                  </button>
                   <button
                     type="button"
                     onClick={handleExportFullWorkspaceJson}
-                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#6d7696] hover:bg-[#5d6685] border border-[#879fd0] text-white font-semibold transition shadow-xs"
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#6d7696] hover:bg-[#5d6685] border border-[#879fd0] text-white font-semibold transition shadow-xs cursor-pointer"
+                    title="Unduh seluruh data Workspace ke file JSON"
                   >
                     <Download className="w-3.5 h-3.5 text-white" />
                     <span>Backup JSON</span>
