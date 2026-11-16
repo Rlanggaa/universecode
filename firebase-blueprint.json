@@ -1,0 +1,238 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Creator account profile and onboarding progress without exposed public PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public display name of the creator",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "roleTitle": {
+          "type": "string",
+          "description": "Creator role or specialization",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "onboardingCompleted": {
+          "type": "boolean",
+          "description": "Whether the initial onboarding wizard is completed"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["uid", "displayName", "roleTitle", "onboardingCompleted", "createdAt", "updatedAt"]
+    },
+    "WorkspaceSnapshot": {
+      "title": "WorkspaceSnapshot",
+      "description": "Top-level creative workspace container storing synchronized worldbuilding state.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the workspace owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Workspace name",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "description": "Workspace summary",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Access visibility mode",
+          "enum": ["private", "public", "shared"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["ownerId", "name", "description", "visibility", "createdAt", "updatedAt"]
+    },
+    "WorldEntity": {
+      "title": "WorldEntity",
+      "description": "A fictional world or IP universe within a workspace.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the world owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "workspaceId": {
+          "type": "string",
+          "description": "Parent workspace ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the world or setting",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "universe": {
+          "type": "string",
+          "description": "Parent universe name",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "genre": {
+          "type": "string",
+          "description": "Primary genre classification",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "synopsis": {
+          "type": "string",
+          "description": "World overview pitch and lore summary",
+          "minLength": 0,
+          "maxLength": 2000
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Publication visibility state",
+          "enum": ["private", "public", "password"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["ownerId", "workspaceId", "name", "universe", "genre", "synopsis", "visibility", "createdAt", "updatedAt"]
+    },
+    "ArticleEntity": {
+      "title": "ArticleEntity",
+      "description": "Encyclopedia article or templated entity record inside a world.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the article creator/owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "worldId": {
+          "type": "string",
+          "description": "Parent world ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Article title",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "templateType": {
+          "type": "string",
+          "description": "Worldbuilding template identifier",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "category": {
+          "type": "string",
+          "description": "Encyclopedia category",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "summary": {
+          "type": "string",
+          "description": "Short excerpt or synopsis",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "content": {
+          "type": "string",
+          "description": "Rich article body and structured lore",
+          "minLength": 0,
+          "maxLength": 100000
+        },
+        "status": {
+          "type": "string",
+          "description": "Editorial workflow state",
+          "enum": ["draft", "published", "archived"]
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Access control state",
+          "enum": ["public", "private", "secret"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["ownerId", "worldId", "title", "templateType", "category", "summary", "content", "status", "visibility", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Creator profile and onboarding progress documents keyed by Firebase Auth UID."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/WorkspaceSnapshot" },
+      "description": "Creative IP workspaces owned by authenticated users."
+    },
+    "/worlds/{worldId}": {
+      "schema": { "$ref": "#/entities/WorldEntity" },
+      "description": "Worlds and universes belonging to a user's workspace."
+    },
+    "/articles/{articleId}": {
+      "schema": { "$ref": "#/entities/ArticleEntity" },
+      "description": "Worldbuilding encyclopedia articles and templated entity records."
+    }
+  }
+}

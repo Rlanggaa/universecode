@@ -1,0 +1,947 @@
+WEBSITE DEVELOPMENT BRIEF
+Worldbuilding & Creative IP Management Platform
+Dokumen: Product Requirements & Technical Development Brief
+Status: Initial Product Specification
+Referensi produk: World Anvil
+Model akses: Full Features – No Subscription
+Platform: Web Application (Responsive Desktop & Mobile)
+________________________________________
+1. PROJECT OVERVIEW
+1.1 Project Description
+Membangun sebuah platform web terintegrasi untuk membantu kreator membangun, mendokumentasikan, mengelola, mengembangkan, dan mempublikasikan dunia fiksi maupun Intellectual Property (IP).
+Platform menggabungkan fungsi:
+•	Worldbuilding Encyclopedia
+•	Knowledge Management System
+•	Character & Relationship Management
+•	Story Development Workspace
+•	Visual Planning Tools
+•	Interactive Mapping
+•	Manuscript Writing
+•	Creative Project Management
+•	Publication & Collaboration
+Produk mengambil referensi fungsional dari World Anvil, tetapi harus memiliki identitas visual, struktur navigasi, desain antarmuka, serta implementasi teknis yang independen.
+1.2 Product Vision
+Menjadi ruang kerja digital terpadu bagi kreator untuk membangun sebuah IP secara menyeluruh, mulai dari ide awal, dokumentasi dunia, karakter, cerita, sistem, dan visualisasi hingga pengembangan serta publikasi karya.
+1.3 Product Objectives
+1.	Menyatukan seluruh dokumentasi IP dalam satu platform.
+2.	Menghubungkan informasi agar setiap elemen dunia memiliki keterkaitan.
+3.	Menyediakan berbagai metode visual untuk memahami kompleksitas dunia fiksi.
+4.	Mendukung kolaborasi antaranggota tim.
+5.	Memberikan kontrol penuh kepada pengguna atas data, privasi, dan publikasi.
+6.	Menyediakan seluruh modul tanpa subscription atau feature paywall.
+1.4 Target Users
+•	Penulis novel dan cerita.
+•	Seniman digital dan ilustrator.
+•	Studio animasi.
+•	Studio game.
+•	Pembuat komik dan webtoon.
+•	Film dan screenwriter.
+•	Independent IP creators.
+•	Worldbuilders.
+•	Tabletop RPG Game Masters.
+•	Tim produksi kreatif dan penerbit.
+________________________________________
+2. ACCESS & SUBSCRIPTION POLICY
+2.1 Fundamental Policy
+SELURUH FITUR HARUS DAPAT DIGUNAKAN OLEH SELURUH PENGGUNA TANPA SUBSCRIPTION.
+Tidak boleh terdapat:
+•	Premium-only features.
+•	Feature locking.
+•	Membership-based feature access.
+•	Pembatasan jumlah penggunaan fitur berdasarkan paket.
+•	Kewajiban upgrade untuk menggunakan fitur profesional.
+•	Iklan yang mengganggu pengalaman penggunaan.
+•	Pembatasan privasi berdasarkan status membership.
+Seluruh fitur harus tersedia sejak pengguna membuat akun.
+2.2 Resource Management
+Walaupun semua fitur gratis, administrator tetap dapat mengatur penggunaan sumber daya server demi stabilitas sistem.
+Hal yang boleh dibatasi secara teknis:
+•	Kapasitas penyimpanan file.
+•	Ukuran maksimum file upload.
+•	Bandwidth.
+•	Frekuensi request API.
+•	Kapasitas pemrosesan background jobs.
+Batas tersebut harus transparan dan tidak boleh menonaktifkan modul tertentu.
+Sediakan kemungkinan:
+•	Ekspor seluruh data.
+•	Backup mandiri.
+•	Integrasi external storage.
+•	Penggunaan storage milik pengguna sendiri apabila memungkinkan.
+2.3 User Roles
+Hak akses harus berdasarkan role dan permission, bukan membership.
+Role bawaan:
+Role	Hak akses
+Platform Admin	Pengelolaan keseluruhan platform
+Workspace Owner	Kepemilikan dan kontrol penuh workspace
+Workspace Admin	Pengaturan anggota dan konten
+Editor	Mengubah dan mengelola konten
+Contributor	Membuat dan mengirim konten
+Reviewer	Memberikan komentar dan review
+Viewer	Membaca konten sesuai izin
+Owner dapat mengatur permission khusus untuk setiap anggota.
+________________________________________
+3. INFORMATION ARCHITECTURE
+Platform harus memiliki struktur bertingkat.
+Level 1 — Account
+•	Profile
+•	Settings
+•	Notifications
+•	Account Security
+Level 2 — Workspace / Project
+•	Project Dashboard
+•	Members
+•	Permissions
+•	Project Settings
+Level 3 — World / Universe
+•	World Overview
+•	Articles
+•	Characters
+•	Locations
+•	Organizations
+•	Items
+•	Maps
+•	Timelines
+•	Relationships
+•	Manuscripts
+•	Whiteboards
+•	Other Tools
+Level 4 — Content / Entity
+•	Detail artikel
+•	Informasi entitas
+•	Media
+•	Metadata
+•	Relationship
+•	References
+•	Version History
+•	Access Settings
+Catatan: Workspace dan World harus menjadi dua entitas berbeda. Satu workspace dapat memiliki beberapa dunia, dan satu dunia dapat memiliki banyak modul dokumentasi.
+________________________________________
+4. FUNCTIONAL REQUIREMENTS
+MODULE 01 — USER & ACCOUNT MANAGEMENT
+Fungsi:
+•	Registration dan login.
+•	Email verification.
+•	Password recovery.
+•	User profile.
+•	Avatar.
+•	User preferences.
+•	Security settings.
+•	Session management.
+•	Notification center.
+•	Account deletion.
+•	Data export.
+Tambahan:
+•	OAuth login jika memungkinkan.
+•	Two-factor authentication.
+•	Personal workspace.
+MODULE 02 — WORLD / UNIVERSE MANAGER
+Fungsi:
+•	Create, edit, delete worlds.
+•	Create multiple universes.
+•	World description.
+•	Genre and tags.
+•	Cover image.
+•	Custom thumbnail.
+•	World homepage.
+•	World categories.
+•	World navigation.
+•	World statistics.
+•	World announcements.
+•	Project duplication.
+•	World import/export.
+Sediakan dashboard dengan:
+•	Total articles.
+•	Total characters.
+•	Total locations.
+•	Total media.
+•	Total words.
+•	Recent activities.
+•	Recently edited content.
+•	Unfinished tasks.
+MODULE 03 — ARTICLE & WIKI SYSTEM
+Fungsi:
+•	Rich-text editor.
+•	Heading and paragraph formatting.
+•	Tables.
+•	Images.
+•	Image galleries.
+•	Audio and video embedding.
+•	Hyperlinks.
+•	Internal article links.
+•	Tags and categories.
+•	Breadcrumbs.
+•	Table of contents.
+•	Article preview.
+•	Reading mode.
+•	Draft and published states.
+•	Private articles.
+•	Hidden sections.
+•	Spoilers.
+•	Comments.
+•	Article references.
+•	Backlinks.
+•	Version history.
+•	Revision comparison.
+•	Article duplication.
+•	Article transfer between worlds.
+Auto-linking
+Sistem harus dapat mendeteksi nama entitas yang telah terdaftar di database.
+Pengguna dapat:
+•	Menerima seluruh rekomendasi.
+•	Menyeleksi rekomendasi.
+•	Mengedit tautan manual.
+MODULE 04 — WORLDBUILDING TEMPLATE SYSTEM
+Sediakan template bawaan:
+•	Character
+•	Condition
+•	Document
+•	Ethnicity / Culture
+•	Military Unit
+•	Item
+•	Language
+•	Material
+•	Conflict
+•	Myth / Legend
+•	Location - Building
+•	Location - Geographic
+•	Location - Settlement
+•	Natural Law
+•	Organization
+•	Prose
+•	Profession
+•	Plot
+•	Title
+•	Session Report
+•	Species
+•	Spell
+•	Technology
+•	Tradition / Ritual
+•	Vehicle
+•	Generic Article
+Setiap template harus memiliki field khusus.
+Contoh Character:
+•	Full Name
+•	Alias
+•	Age
+•	Gender
+•	Species
+•	Occupation
+•	Personality
+•	Motivation
+•	Background
+•	Character Arc
+•	Strengths
+•	Weaknesses
+•	Skills
+•	Abilities
+•	Appearance
+•	Costume
+•	Voice
+•	Relationships
+•	Gallery
+•	Related Locations
+•	Related Organizations
+Setiap template harus dapat disesuaikan oleh pengguna.
+Custom Template Builder
+Sediakan sistem untuk:
+•	Membuat template baru.
+•	Menambah field.
+•	Menghapus field.
+•	Mengubah urutan field.
+•	Mengubah tipe field.
+•	Menambahkan prompt.
+•	Menambahkan pilihan dropdown.
+•	Mengatur field wajib dan opsional.
+•	Mengatur relasi dengan entitas lain.
+Jenis field:
+•	Text
+•	Long Text
+•	Number
+•	Date
+•	Dropdown
+•	Multi-select
+•	Checkbox
+•	Image
+•	File
+•	URL
+•	Entity Reference
+•	Repeater / Repeating Group
+MODULE 05 — RELATIONSHIP MANAGEMENT
+Tujuan: mengelola keterkaitan antarentitas.
+Fungsi:
+Character Relationship
+•	Family.
+•	Friendship.
+•	Rivalry.
+•	Partnership.
+•	Enemy.
+•	Mentor / Student.
+•	Custom Relationship.
+Family Tree
+•	Parents.
+•	Children.
+•	Siblings.
+•	Marriage.
+•	Adoption.
+•	Extended bloodline.
+•	Multiple generations.
+Diplomacy Web
+•	Political relations.
+•	Organization relations.
+•	Alliances.
+•	Conflicts.
+•	Neutral relations.
+•	Relationship score.
+•	Custom connection types.
+Content Tree
+•	Hierarchy.
+•	Organizational charts.
+•	Species trees.
+•	Technology trees.
+•	Magic system hierarchy.
+Semua diagram harus dapat diedit secara visual dan terhubung dengan artikel yang bersangkutan.
+MODULE 06 — INTERACTIVE MAP
+Fungsi:
+•	Upload map image.
+•	Zoom.
+•	Pan.
+•	Drag-and-drop.
+•	Multiple map layers.
+•	Multiple marker groups.
+•	Custom map markers.
+•	Character markers.
+•	Location markers.
+•	Event markers.
+•	Hidden markers.
+•	Marker labels.
+•	Circular markers.
+•	Polygon markers.
+•	Line markers.
+•	Custom shapes.
+•	Compass.
+•	Marker descriptions.
+•	Link markers to articles.
+Advanced:
+•	Nested maps.
+•	World map → Region map → City map → Building map.
+•	Track character movements.
+•	Display historical map changes.
+•	Map visibility permissions.
+Map editor harus mempunyai dua mode:
+1.	Editing Mode.
+2.	Exploration / Presentation Mode.
+MODULE 07 — TIMELINE & HISTORY
+Fungsi:
+•	Create multiple timelines.
+•	Add events.
+•	Set event dates.
+•	Set event duration.
+•	Add descriptions.
+•	Add event images.
+•	Link events to characters.
+•	Link events to locations.
+•	Link events to organizations.
+•	Create historical eras.
+•	Parallel timelines.
+•	Zoom and navigation.
+•	Chronological sorting.
+MODULE 08 — CALENDAR & CHRONICLES
+Custom Calendar
+•	Custom year system.
+•	Custom month names.
+•	Custom weekday names.
+•	Custom number of days.
+•	Custom year duration.
+•	Festivals.
+•	Recurring events.
+•	Lunar cycles.
+•	Astronomical events.
+Chronicles
+Menggabungkan:
+•	Timeline.
+•	Calendar.
+•	Map.
+•	Historical Events.
+Ketika pengguna memilih sebuah event, peta dapat berpindah ke lokasi kejadian tersebut.
+MODULE 09 — VISUAL DIAGRAM & WHITEBOARD
+Whiteboard
+Sediakan kanvas yang dapat digunakan untuk:
+•	Text boxes.
+•	Sticky notes.
+•	Shapes.
+•	Arrows.
+•	Connecting lines.
+•	Images.
+•	Upload files.
+•	Entity cards.
+•	Article cards.
+•	Map cards.
+•	Freeform drawing.
+Kemampuan:
+•	Drag-and-drop.
+•	Resize.
+•	Zoom.
+•	Pan.
+•	Group elements.
+•	Layers.
+•	Connect elements.
+•	Multiple boards.
+•	Export image/PDF.
+Additional Diagrams
+•	Family Tree.
+•	Diplomacy Web.
+•	Character Relationship Web.
+•	Content Tree.
+•	Organization Chart.
+•	Plot Diagram.
+•	Technology Tree.
+MODULE 10 — MANUSCRIPT & STORY DEVELOPMENT
+Modul khusus untuk penulisan cerita panjang.
+Fungsi:
+•	Create manuscripts.
+•	Chapters.
+•	Scenes.
+•	Outline.
+•	Synopsis.
+•	Plot development.
+•	Chapter management.
+•	Scene ordering.
+•	Drag-and-drop.
+•	Word count.
+•	Writing goals.
+•	Notes.
+•	Version history.
+•	Reading mode.
+•	Focus mode.
+•	Manuscript themes.
+•	Export DOCX, PDF, and TXT.
+•	Export Markdown.
+Manuscript harus terintegrasi dengan World Database sehingga karakter, lokasi, dan organisasi dapat dirujuk dari naskah.
+MODULE 11 — NOTEBOOK & PRODUCTIVITY
+Fungsi:
+•	Personal notebook.
+•	Project notebook.
+•	Idea capture.
+•	Notes categorization.
+•	Color coding.
+•	To-do lists.
+•	Task priority.
+•	Task status.
+•	Deadlines.
+•	Word count tracking.
+•	Writing goals.
+•	Project variables.
+•	Tags.
+Sediakan tampilan list dan kanban jika memungkinkan.
+MODULE 12 — INTERACTIVE TABLE & RANDOM GENERATOR
+Interactive Table
+•	Create custom table.
+•	Editable columns.
+•	Sort.
+•	Filter.
+•	Search.
+•	Import CSV.
+•	Export CSV.
+•	Embed in articles.
+•	Interactive values.
+Random Generator
+•	Custom input pools.
+•	Probability.
+•	Weighted selection.
+•	Multiple result generation.
+•	Custom generation rules.
+•	Save generated results.
+MODULE 13 — RPG CAMPAIGN MANAGEMENT
+Modul opsional dalam konteks penggunaan, tetapi seluruh fungsinya tetap harus gratis.
+Fungsi:
+•	Create campaigns.
+•	Manage players.
+•	Player characters.
+•	NPC management.
+•	Party management.
+•	Quest management.
+•	Session planning.
+•	Session history.
+•	GM notes.
+•	Equipment.
+•	Inventory.
+•	Character sheets.
+•	Statblocks.
+•	Custom RPG system.
+•	Dice roller.
+•	Secret storyteller screen.
+•	Player handouts.
+Integrasi eksternal:
+•	Foundry VTT.
+•	Discord Webhooks.
+•	External RPG APIs jika tersedia.
+MODULE 14 — CREATIVE STUDIO & CUSTOMIZATION
+Fungsi:
+•	Theme selection.
+•	Custom themes.
+•	Custom CSS.
+•	Custom article layouts.
+•	Custom category layouts.
+•	Custom map markers.
+•	Custom icons.
+•	Custom statblocks.
+•	Custom templates.
+•	Custom containers.
+•	Custom page sections.
+Perhatikan keamanan: custom CSS harus diisolasi agar tidak dapat merusak atau mengakses data pengguna lain. Hindari menjalankan arbitrary JavaScript dari pengguna.
+MODULE 15 — PUBLICATION & SHARING
+Fungsi:
+•	Publish world.
+•	Publish articles.
+•	Public/private modes.
+•	Selected-user access.
+•	Group permissions.
+•	Password-protected pages.
+•	Access codes.
+•	Shareable links.
+•	Custom URLs.
+•	Custom domains.
+•	Public world homepage.
+•	SEO metadata.
+•	Sitemap.
+•	RSS feeds.
+•	Social previews.
+•	White-label presentation.
+Pengguna harus dapat menentukan tingkat keterbukaan setiap dunia maupun kontennya secara terpisah.
+MODULE 16 — COMMUNITY & DISCUSSION
+Fungsi:
+•	User profiles.
+•	Public creator pages.
+•	Discussion boards.
+•	Comments.
+•	Replies.
+•	Reactions.
+•	Community posts.
+•	Polling.
+•	Project showcase.
+•	Reporting system.
+•	Moderation dashboard.
+•	User blocking.
+Modul ini dapat dikembangkan setelah fitur inti selesai karena membutuhkan moderasi komunitas.
+MODULE 17 — API & INTEGRATION
+Fungsi:
+•	REST API.
+•	API tokens.
+•	Webhooks.
+•	Import data.
+•	Export data.
+•	External integration.
+•	Discord integration.
+•	Analytics integration.
+•	Storage integration.
+Sediakan API documentation untuk pengembang.
+________________________________________
+5. USER INTERFACE & USER EXPERIENCE REQUIREMENTS
+5.1 General Design Direction
+Desain harus memberikan kesan:
+•	Professional.
+•	Modern.
+•	Organized.
+•	Flexible.
+•	Creative.
+•	Information-dense but readable.
+Jangan menyalin tampilan World Anvil secara langsung.
+Buat identitas visual independen dengan sistem desain yang konsisten.
+5.2 Main Navigation
+Rekomendasi struktur antarmuka:
+Left Sidebar
+•	Dashboard
+•	Worlds
+•	Articles
+•	Characters
+•	Locations
+•	Organizations
+•	Maps
+•	Timelines
+•	Relationships
+•	Whiteboards
+•	Manuscripts
+•	Notebook
+•	Campaigns
+•	Assets
+•	Settings
+Top Navigation
+•	Current workspace.
+•	Current world.
+•	Global search.
+•	Quick create.
+•	Notifications.
+•	User profile.
+Main Workspace
+•	Menampilkan modul yang sedang digunakan.
+Context Sidebar
+•	Detail entitas.
+•	Related articles.
+•	Relationships.
+•	Tags.
+•	Metadata.
+•	Activity history.
+Sidebar harus dapat di-collapse.
+5.3 Dashboard
+Dashboard harus menyediakan:
+•	Recently opened.
+•	Recently edited.
+•	Continue working.
+•	Recent activities.
+•	Project statistics.
+•	Quick access.
+•	Tasks.
+•	Notifications.
+5.4 Responsive Design
+Website harus berfungsi pada:
+•	Desktop.
+•	Laptop.
+•	Tablet.
+•	Smartphone.
+Desktop menjadi prioritas untuk fitur kompleks seperti diagram, whiteboard, map editor, dan manuscript management.
+Mobile harus tetap mendukung pembacaan, editing dasar, pencatatan ide, dan pengelolaan proyek.
+5.5 Editor Experience
+Semua editor harus memiliki:
+•	Autosave.
+•	Save status.
+•	Undo / Redo.
+•	Preview.
+•	Version history.
+•	Draft recovery.
+•	Keyboard shortcuts.
+•	Error feedback.
+Autosave harus menangani konflik perubahan ketika beberapa pengguna sedang mengedit konten yang sama.
+________________________________________
+6. DATABASE & BACKEND ARCHITECTURE
+Sistem harus dirancang sebagai interconnected knowledge database.
+6.1 Core Entities
+Entitas utama database:
+•	User
+•	Workspace
+•	WorkspaceMember
+•	Role
+•	Permission
+•	Universe
+•	World
+•	Category
+•	Article
+•	ArticleTemplate
+•	TemplateField
+•	Tag
+•	EntityRelationship
+•	MediaAsset
+•	Map
+•	MapLayer
+•	MapMarker
+•	Timeline
+•	TimelineEvent
+•	Calendar
+•	Chronicle
+•	Whiteboard
+•	WhiteboardElement
+•	Manuscript
+•	Chapter
+•	Scene
+•	Notebook
+•	Task
+•	InteractiveTable
+•	Generator
+•	Campaign
+•	RPGCharacter
+•	NPC
+•	Statblock
+•	Discussion
+•	Comment
+•	VersionHistory
+•	AccessPolicy
+•	Notification
+6.2 Data Relationship
+Struktur harus memungkinkan:
+•	Satu workspace memiliki banyak world.
+•	Satu world memiliki banyak artikel.
+•	Satu artikel dapat terhubung dengan banyak entitas.
+•	Satu karakter dapat muncul pada beberapa artikel atau naskah.
+•	Satu lokasi dapat memiliki banyak map marker.
+•	Satu event dapat memiliki beberapa keterkaitan dengan timeline dan map.
+•	Satu organisasi dapat memiliki relasi dengan banyak organisasi lainnya.
+•	Satu template dapat digunakan untuk membuat banyak artikel.
+Gunakan sistem relasi fleksibel agar penambahan jenis entitas baru tidak mengharuskan perubahan besar pada struktur database.
+Simpan field template yang dinamis menggunakan struktur data yang terkontrol, misalnya JSONB, tetapi tetap gunakan tabel relasional untuk identitas utama dan hubungan antarentitas.
+6.3 Data Portability
+Pengguna adalah pemilik konten.
+Sistem wajib mendukung:
+•	Export single article.
+•	Export entire world.
+•	Export manuscript.
+•	Export media metadata.
+•	Full workspace data export.
+•	Backup restoration.
+Sediakan format JSON dan Markdown untuk dokumentasi, CSV untuk tabel, serta format umum lain sesuai jenis konten.
+________________________________________
+7. RECOMMENDED TECHNOLOGY STACK
+Pilihan teknologi berikut merupakan rekomendasi awal dan dapat disesuaikan dengan kompetensi tim.
+Layer	Recommended Technology
+Frontend	Next.js + React + TypeScript
+Styling	Tailwind CSS
+UI Components	shadcn/ui atau custom component system
+Backend	Node.js + NestJS
+Database	PostgreSQL
+ORM	Prisma atau Drizzle
+Authentication	Auth.js / Supabase Auth
+Rich Text Editor	TipTap / ProseMirror
+Interactive Maps	Leaflet / OpenLayers
+Graph & Diagram	React Flow / D3.js
+Whiteboard	tldraw atau custom canvas
+Real-time Collaboration	WebSocket + Yjs
+File Storage	S3-compatible object storage
+Cache & Background Jobs	Redis + BullMQ
+Search	PostgreSQL Full-Text Search; Meilisearch jika diperlukan
+Deployment	Docker + cloud hosting
+Monitoring	Sentry / equivalent
+Pertimbangan teknis:
+1.	Gunakan modular architecture.
+2.	Jangan membuat seluruh fitur dalam satu komponen besar.
+3.	Pisahkan sistem artikel, peta, timeline, manuscript, dan RPG sebagai modul yang terintegrasi.
+4.	Utamakan keamanan data sejak awal.
+5.	Gunakan database migration.
+6.	Implementasikan automated backup.
+7.	Sediakan API yang terdokumentasi.
+8.	Pastikan sistem dapat dikembangkan tanpa harus membangun ulang keseluruhan aplikasi.
+________________________________________
+8. SECURITY & NON-FUNCTIONAL REQUIREMENTS
+Security
+•	Secure authentication.
+•	Role-based access control.
+•	Workspace isolation.
+•	Private content protection.
+•	Input validation.
+•	File upload validation.
+•	Protection against XSS, CSRF, SQL injection.
+•	Rate limiting.
+•	Secure password storage.
+•	Audit logs.
+•	Regular database backups.
+Performance
+•	Fast dashboard loading.
+•	Lazy loading for large media galleries.
+•	Pagination for large articles.
+•	Optimized images.
+•	Efficient search indexing.
+•	Background processing for exports.
+•	Responsive interaction on large diagrams and maps.
+Reliability
+•	Automatic saving.
+•	Version history.
+•	Error recovery.
+•	Backup verification.
+•	Logging and monitoring.
+•	Disaster recovery procedure.
+Accessibility
+•	Keyboard navigation.
+•	Sufficient color contrast.
+•	Accessible form fields.
+•	Screen-reader-friendly labels.
+•	Responsive layout.
+________________________________________
+9. DEVELOPMENT ROADMAP
+Pembangunan sebaiknya dilakukan bertahap, tanpa mengurangi komitmen bahwa seluruh fitur akhirnya tersedia gratis.
+PHASE 1 — CORE PLATFORM
+Prioritas tertinggi.
+•	Authentication.
+•	User management.
+•	Workspace.
+•	World manager.
+•	Article editor.
+•	Article templates.
+•	Categories and tags.
+•	Search.
+•	Auto-linking.
+•	Relationship foundation.
+•	Media library.
+•	Permission management.
+•	Import/export.
+Output: platform worldbuilding dasar yang benar-benar dapat digunakan untuk mengelola sebuah IP.
+PHASE 2 — VISUAL WORLDBUILDING
+•	Interactive map.
+•	Map layers.
+•	Map markers.
+•	Timeline.
+•	Family tree.
+•	Diplomacy web.
+•	Content tree.
+•	Whiteboard.
+•	Relationship visualization.
+Output: dunia fiksi dapat dipahami secara visual dan terhubung dengan dokumentasinya.
+PHASE 3 — STORY DEVELOPMENT
+•	Manuscripts.
+•	Chapters and scenes.
+•	Plotting.
+•	Calendar.
+•	Chronicles.
+•	Notebook.
+•	Task management.
+•	Interactive tables.
+•	Random generators.
+•	Custom templates.
+Output: platform mendukung keseluruhan proses pengembangan cerita.
+PHASE 4 — ADVANCED & PROFESSIONAL FEATURES
+•	RPG campaign manager.
+•	Custom character sheets.
+•	Advanced map system.
+•	Publication.
+•	Custom domains.
+•	White labeling.
+•	Community.
+•	Discussion boards.
+•	API.
+•	Webhooks.
+•	Analytics.
+•	Advanced access management.
+•	Advanced customization.
+Output: ekosistem lengkap yang dapat digunakan oleh kreator individu maupun studio profesional.
+________________________________________
+10. DELIVERABLES
+From Web Designer / UI UX Designer
+1.	Product information architecture.
+2.	User flow.
+3.	Wireframes.
+4.	High-fidelity UI designs.
+5.	Design system.
+6.	Component library.
+7.	Responsive layouts.
+8.	Interactive prototypes.
+9.	Dashboard designs.
+10.	Editor interfaces.
+11.	Interactive map interfaces.
+12.	Diagram and whiteboard interfaces.
+13.	Mobile interfaces.
+From Web Programmer / Development Team
+1.	Frontend implementation.
+2.	Backend implementation.
+3.	Database schema and ERD.
+4.	Authentication and authorization.
+5.	API documentation.
+6.	Module implementation.
+7.	File storage integration.
+8.	Real-time collaboration.
+9.	Export and backup system.
+10.	Testing.
+11.	Deployment configuration.
+12.	Technical documentation.
+13.	Maintenance and recovery documentation.
+________________________________________
+11. ACCEPTANCE CRITERIA
+Website dinyatakan memenuhi kebutuhan utama apabila:
+1.	Pengguna dapat membuat akun dan workspace.
+2.	Pengguna dapat membuat lebih dari satu universe/world.
+3.	Pengguna dapat membuat dan mengelola artikel serta kategori.
+4.	Pengguna dapat menggunakan template bawaan dan membuat template sendiri.
+5.	Artikel dapat saling terhubung secara otomatis maupun manual.
+6.	Pengguna dapat membuat hubungan antarentitas.
+7.	Pengguna dapat membuat peta interaktif dan menambahkan marker.
+8.	Pengguna dapat membuat dan mengelola timeline.
+9.	Pengguna dapat membuat diagram dan whiteboard.
+10.	Pengguna dapat menulis manuscript.
+11.	Pengguna dapat mengatur hak akses dan privasi.
+12.	Beberapa orang dapat bekerja dalam satu workspace sesuai permission.
+13.	Pengguna dapat mempublikasikan dan membagikan konten.
+14.	Pengguna dapat mengunduh data miliknya.
+15.	Seluruh modul tidak memerlukan subscription untuk diakses.
+Pastikan semua fungsi inti diuji secara nyata, bukan hanya muncul sebagai tombol atau tampilan UI.
+________________________________________
+12. PRODUCT DIFFERENTIATION & FUTURE OPPORTUNITIES
+Platform tidak harus berhenti pada kemampuan World Anvil.
+Pengembangan lanjutan yang dapat menjadi pembeda:
+A. Creative IP Pipeline
+Menghubungkan worldbuilding dengan proses produksi profesional.
+Contoh:
+•	Character Bible.
+•	Environment Bible.
+•	Prop Database.
+•	Visual Development.
+•	Concept Art Library.
+•	Story Bible.
+•	Production Notes.
+•	Episode Breakdown.
+•	Asset Tracking.
+B. Visual Reference Management
+Sistem untuk:
+•	Mengorganisasi concept art.
+•	Mengelompokkan reference image.
+•	Membandingkan versi desain.
+•	Menghubungkan gambar dengan karakter atau lokasi.
+•	Menyusun moodboard.
+•	Menyusun visual research.
+C. Production Collaboration
+Fitur tambahan:
+•	Review and approval.
+•	Feedback system.
+•	Revision tracking.
+•	Production task board.
+•	Team activity log.
+•	Asset ownership.
+D. IP Knowledge Graph
+Seluruh konten dapat dihubungkan dalam satu sistem relasi visual.
+Contoh:
+Character → Organization → Location → Event → Item → Story Arc
+Pengguna dapat melihat bagaimana satu keputusan atau entitas berkaitan dengan bagian lain dari dunia yang sedang dikembangkan.
+________________________________________
+13. FINAL DEVELOPMENT PRINCIPLES
+Prinsip utama yang tidak boleh diabaikan:
+1. Feature parity without subscription. Seluruh modul harus tersedia untuk setiap akun.
+2. Interconnected data. Jangan membangun modul yang terisolasi satu sama lain.
+3. Flexible architecture. Template, kategori, dan hubungan harus dapat dikustomisasi.
+4. User ownership. Pengguna harus dapat mengekspor dan membawa keluar seluruh kontennya.
+5. Privacy by design. Keamanan dan privasi tidak boleh menjadi hak istimewa membership.
+6. Scalability. Struktur backend harus siap menerima pertumbuhan jumlah pengguna dan data.
+7. Independent identity. Gunakan World Anvil sebagai referensi kemampuan, bukan sebagai desain yang disalin.
+8. Creator-focused. Sistem harus mendukung proses kreatif, bukan memaksa kreator mengikuti satu metode worldbuilding tertentu.
+
+MODULE 14 — USER ONBOARDING & INTERACTIVE LEARNING
+Objective
+Memastikan pengguna baru dapat memahami dan menggunakan seluruh fungsi platform tanpa membutuhkan pengetahuan teknis atau pengalaman worldbuilding sebelumnya.
+Functional Requirements
+1.	Welcome Wizard.
+2.	First-time User Onboarding.
+3.	Interactive Product Tour.
+4.	Step-by-step Tutorials.
+5.	Contextual Tooltips.
+6.	Guided Feature Demonstrations.
+7.	Getting Started Checklist.
+8.	Tutorial Progress Tracking.
+9.	Resume Incomplete Tutorials.
+10.	Replay Tutorial.
+11.	Skip Tutorial.
+12.	Example Workspace.
+13.	Example World.
+14.	Example Articles and Templates.
+15.	Video Tutorial Integration.
+16.	Searchable Help Center.
+Tutorial Design
+Tutorial harus tersedia berdasarkan modul:
+•	Workspace Management.
+•	World Creation.
+•	Article Editor.
+•	Template Builder.
+•	Character Management.
+•	Relationship System.
+•	Interactive Maps.
+•	Timelines.
+•	Calendars.
+•	Whiteboards.
+•	Manuscripts.
+•	Publishing.
+•	Collaboration.
+•	Settings.
+Setiap tutorial harus menjelaskan:
+1.	What is it?
+2.	What is it used for?
+3.	How does it work?
+4.	Step-by-step instructions.
+5.	Practical example.
+6.	Common mistakes.
+Tutorial harus kontekstual, interaktif, dapat dilewati, dan dapat diakses kembali kapan saja.
+
+________________________________________
+END OF DEVELOPMENT BRIEF
+

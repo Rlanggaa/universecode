@@ -1,0 +1,6 @@
+{
+  "name": "Aetherium Codex — Worldbuilding & IP Studio",
+  "description": "Integrated worldbuilding encyclopedia, interactive cartography, chronicle timelines, visual relationship graphs, manuscript studio, and creative IP management platform — 100% full features without subscription.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
