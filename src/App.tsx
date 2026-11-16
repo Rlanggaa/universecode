@@ -4245,10 +4245,10 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-[#181b26]">
-                    {activeAccount ? 'Akun & Cloud Sync' : 'Log in Akun & Cloud Sync'}
+                    {activeAccount ? 'Akun & Firebase Cloud Sync' : 'Log in Akun & Firebase Cloud Sync'}
                   </h3>
                   <p className="text-[11px] text-[#6d7696]">
-                    Sinkronisasi otomatis antar perangkat (Vercel &amp; Supabase)
+                    Sinkronisasi otomatis lintas browser &amp; perangkat (Firebase Firestore)
                   </p>
                 </div>
               </div>
@@ -4266,9 +4266,7 @@ export default function App() {
               <div className="flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-[#f8f9fc] border border-[#dce3f2] text-xs">
                 <span className="text-[#52586e] font-medium">Status Cloud Database:</span>
                 <span className="font-bold px-2.5 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-800 border border-emerald-300">
-                  {isSupabaseConfigured()
-                    ? 'Cloud Vault + Supabase Aktif'
-                    : 'Cloud Database Aktif'}
+                  Firebase Cloud Firestore Aktif
                 </span>
               </div>
 
@@ -4330,7 +4328,7 @@ export default function App() {
                   </div>
 
                   <p className="text-[11px] text-[#52586e] leading-relaxed">
-                    Tips: Masuk dengan <strong>Email/Username &amp; Password/PIN yang sama</strong> di perangkat lain (HP atau Laptop) untuk membuka data akun ini secara otomatis.
+                    Tips: Masuk dengan <strong>Email/Username &amp; Password/PIN yang sama</strong> di browser atau perangkat lain (HP atau Laptop) untuk membuka data akun ini secara otomatis dari Firebase Cloud.
                   </p>
 
                   <button
@@ -4391,8 +4389,8 @@ export default function App() {
                       className="w-full py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold shadow-sm transition disabled:opacity-50 cursor-pointer"
                     >
                       {isSyncingCloud
-                        ? 'Menyinkronkan Akun...'
-                        : 'Masuk / Daftar Akun Cloud Sync'}
+                        ? 'Menyinkronkan ke Firebase...'
+                        : 'Masuk / Daftar Akun Firebase Cloud'}
                     </button>
                   </form>
 
@@ -4412,7 +4410,7 @@ export default function App() {
                   </button>
 
                   <p className="text-[11px] text-[#6d7696] leading-relaxed">
-                    <strong>Catatan lintas perangkat:</strong> Gunakan <strong>Email + Password/PIN</strong> yang sama di Laptop maupun HP agar data otomatis tersinkronisasi melalui Supabase, dan saat berganti dari Akun A ke Akun B di perangkat yang sama, data masing-masing akun tetap terpisah.
+                    <strong>Catatan lintas perangkat:</strong> Gunakan <strong>Email + Password/PIN</strong> yang sama di Laptop maupun HP agar data otomatis tersinkronisasi melalui <strong>Firebase Cloud Firestore</strong>, dan saat berganti dari Akun A ke Akun B di perangkat yang sama, data masing-masing akun tetap terpisah.
                   </p>
                 </div>
               )}
