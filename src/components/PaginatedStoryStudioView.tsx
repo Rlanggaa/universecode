@@ -259,19 +259,24 @@ export const PaginatedStoryStudioView: React.FC<PaginatedStoryStudioViewProps> =
     startWidthPercent: number;
   } | null>(null);
 
-  // Sync when switching stories or undo/redo restores storyPagesJson / storyText
+  // Sync when switching stories, undo/redo, or real-time Cloud updates change storyPagesJson / storyText
   const lastSyncedJsonRef = useRef<string>(storyPagesJson);
+  const lastSyncedTextRef = useRef<string>(storyText);
   const lastSyncedStoryIdRef = useRef<string>(activeStoryId);
 
   useEffect(() => {
-    if (
-      activeStoryId !== lastSyncedStoryIdRef.current ||
-      (storyPagesJson !== lastSyncedJsonRef.current && storyPagesJson !== JSON.stringify(pages))
-    ) {
+    const storyIdChanged = activeStoryId !== lastSyncedStoryIdRef.current;
+    const jsonChangedRemotely =
+      storyPagesJson !== lastSyncedJsonRef.current &&
+      storyPagesJson !== JSON.stringify(pages);
+    const textChangedRemotely = storyText !== lastSyncedTextRef.current;
+
+    if (storyIdChanged || jsonChangedRemotely || textChangedRemotely) {
       const nextPages = parseInitialStoryPages(storyPagesJson, storyText);
       setPages(nextPages);
       lastSyncedJsonRef.current = storyPagesJson;
-      if (activeStoryId !== lastSyncedStoryIdRef.current) {
+      lastSyncedTextRef.current = storyText;
+      if (storyIdChanged) {
         setCurrentPageIndex(0);
         setSelectedImageId(null);
         lastSyncedStoryIdRef.current = activeStoryId;
@@ -287,12 +292,13 @@ export const PaginatedStoryStudioView: React.FC<PaginatedStoryStudioViewProps> =
       nextPages.length > 0 ? nextPages : [{ id: 'page-1', text: '', images: [] }];
     setPages(normalized);
     const serialized = JSON.stringify(normalized);
-    lastSyncedJsonRef.current = serialized;
-    setStoryPagesJson(serialized);
     const combinedText = normalized
       .map((p) => p.text.trim())
       .filter(Boolean)
       .join('\n\n');
+    lastSyncedJsonRef.current = serialized;
+    lastSyncedTextRef.current = combinedText;
+    setStoryPagesJson(serialized);
     setStoryText(combinedText);
   };
 

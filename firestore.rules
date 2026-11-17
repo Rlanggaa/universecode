@@ -247,10 +247,8 @@ service cloud.firestore {
       allow update: if isValidId(accountId) &&
         isValidCloudAccount(incoming()) &&
         incoming().accountId == existing().accountId &&
-        incoming().passwordToken == existing().passwordToken &&
-        incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'chunkCount', 'payloadChunk0', 'updatedAt']);
+        incoming().diff(existing()).affectedKeys().hasOnly(['passwordToken', 'displayName', 'chunkCount', 'payloadChunk0', 'createdAt', 'updatedAt']);
       allow delete: if false;
     }
 
@@ -262,18 +260,14 @@ service cloud.firestore {
         isValidCloudBackupChunk(incoming()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        exists(/databases/$(database)/documents/cloud_accounts/$(incoming().accountId)) &&
-        get(/databases/$(database)/documents/cloud_accounts/$(incoming().accountId)).data.passwordToken == incoming().passwordToken;
+        exists(/databases/$(database)/documents/cloud_accounts/$(incoming().accountId));
       allow update: if isValidId(chunkId) &&
         isValidCloudBackupChunk(incoming()) &&
         incoming().accountId == existing().accountId &&
-        incoming().passwordToken == existing().passwordToken &&
         incoming().chunkIndex == existing().chunkIndex &&
-        incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
         exists(/databases/$(database)/documents/cloud_accounts/$(existing().accountId)) &&
-        get(/databases/$(database)/documents/cloud_accounts/$(existing().accountId)).data.passwordToken == incoming().passwordToken &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['payloadChunk', 'updatedAt']);
+        incoming().diff(existing()).affectedKeys().hasOnly(['accountId', 'passwordToken', 'chunkIndex', 'payloadChunk', 'createdAt', 'updatedAt']);
       allow delete: if false;
     }
   }

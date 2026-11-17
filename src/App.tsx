@@ -294,8 +294,16 @@ export default function App() {
           accessMode: access,
           ownerName: owner
         };
+        sessionStorage.setItem(SHARED_WORLD_LINK_SESSION_KEY, JSON.stringify(linkSession));
         localStorage.setItem(SHARED_WORLD_LINK_SESSION_KEY, JSON.stringify(linkSession));
         return linkSession;
+      }
+      const savedSessionLink = sessionStorage.getItem(SHARED_WORLD_LINK_SESSION_KEY);
+      if (savedSessionLink) {
+        const parsed = JSON.parse(savedSessionLink) as SharedWorldLinkSession;
+        if (parsed && parsed.vaultKey && parsed.passwordToken) {
+          return parsed;
+        }
       }
       const savedLink = localStorage.getItem(SHARED_WORLD_LINK_SESSION_KEY);
       if (savedLink) {
@@ -522,6 +530,7 @@ export default function App() {
   const [showStoryAdvancedWiki, setShowStoryAdvancedWiki] = useState<boolean>(false);
   const backupImportInputRef = useRef<HTMLInputElement | null>(null);
   const isHydratingCloudRef = useRef<boolean>(false);
+  const hydratingTimerRef = useRef<number | null>(null);
 
   // ============================================================================
   // GLOBAL UNDO (Ctrl+Z) & REDO (Ctrl+Shift+Z) + UNIVERSAL AUTO-SAVE ENGINE
@@ -1006,10 +1015,108 @@ export default function App() {
     }
 
     setHistoryRevision((r) => r + 1);
-    window.setTimeout(() => {
+    if (hydratingTimerRef.current) {
+      window.clearTimeout(hydratingTimerRef.current);
+    }
+    hydratingTimerRef.current = window.setTimeout(() => {
       isHydratingCloudRef.current = false;
-    }, 80);
+      hydratingTimerRef.current = null;
+    }, 550);
   };
+
+  // Automatically compress any legacy oversized (> 220KB) Base64 images already in worlds/articles
+  // and clear corrupted Base64 strings so Cloud Vault sync stays under 1 single fast chunk (< 700KB)
+  useEffect(() => {
+    const MAX_LEGACY_DATA_URL_LEN = 220000;
+    const compressDataUrl = (rawUrl: string): Promise<string> =>
+      new Promise((resolve) => {
+        if (!rawUrl || !rawUrl.startsWith('data:image/') || rawUrl.length <= MAX_LEGACY_DATA_URL_LEN) {
+          resolve(rawUrl);
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const maxW = 1200;
+            const maxH = 720;
+            let w = img.width || maxW;
+            let h = img.height || maxH;
+            if (w > maxW || h > maxH) {
+              const ratio = Math.min(maxW / w, maxH / h);
+              w = Math.max(1, Math.round(w * ratio));
+              h = Math.max(1, Math.round(h * ratio));
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              resolve('');
+              return;
+            }
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL('image/jpeg', 0.78));
+          } catch {
+            resolve('');
+          }
+        };
+        img.onerror = () => resolve('');
+        img.src = rawUrl;
+      });
+
+    const hasHeavyWorldCss = worlds.some(
+      (w) => typeof w.customCss === 'string' && w.customCss.startsWith('data:image/') && w.customCss.length > MAX_LEGACY_DATA_URL_LEN
+    );
+    const hasHeavyArticleThumb = articles.some((a) => {
+      const tUrl = String(a.templateValues?.ThumbnailUrl || '');
+      const bgUrl = String(a.templateValues?.BackgroundUrl || '');
+      return (
+        (tUrl.startsWith('data:image/') && tUrl.length > MAX_LEGACY_DATA_URL_LEN) ||
+        (bgUrl.startsWith('data:image/') && bgUrl.length > MAX_LEGACY_DATA_URL_LEN)
+      );
+    });
+
+    if (!hasHeavyWorldCss && !hasHeavyArticleThumb) return;
+
+    let cancelled = false;
+    (async () => {
+      if (hasHeavyWorldCss) {
+        const nextWorlds = await Promise.all(
+          worlds.map(async (w) => {
+            if (w.customCss && w.customCss.startsWith('data:image/') && w.customCss.length > MAX_LEGACY_DATA_URL_LEN) {
+              return { ...w, customCss: await compressDataUrl(w.customCss) };
+            }
+            return w;
+          })
+        );
+        if (!cancelled) setWorlds(nextWorlds);
+      }
+      if (hasHeavyArticleThumb) {
+        const nextArticles = await Promise.all(
+          articles.map(async (a) => {
+            const tUrl = String(a.templateValues?.ThumbnailUrl || '');
+            const bgUrl = String(a.templateValues?.BackgroundUrl || '');
+            let changed = false;
+            const nextTv = { ...(a.templateValues || {}) };
+            if (tUrl.startsWith('data:image/') && tUrl.length > MAX_LEGACY_DATA_URL_LEN) {
+              nextTv.ThumbnailUrl = await compressDataUrl(tUrl);
+              changed = true;
+            }
+            if (bgUrl.startsWith('data:image/') && bgUrl.length > MAX_LEGACY_DATA_URL_LEN) {
+              nextTv.BackgroundUrl = await compressDataUrl(bgUrl);
+              changed = true;
+            }
+            return changed ? { ...a, templateValues: nextTv } : a;
+          })
+        );
+        if (!cancelled) setArticles(nextArticles);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [worlds, articles]);
 
   const createEmptyWorkspaceBundle = (): CloudWorkspaceBundle => ({
     worlds: [],
@@ -1870,13 +1977,44 @@ export default function App() {
     };
   }, [sharedWorldLink?.vaultKey, sharedWorldLink?.passwordToken]);
 
-  // REAL-TIME LISTENER (Firestore onSnapshot):
-  // Immediately receives & applies edits made by team members on other browsers/devices in < 1 second
+  // REAL-TIME LISTENER (Firestore onSnapshot + Focus/Interval Sync Guarantee):
+  // Immediately receives & applies edits made by team members on other browsers/devices
   useEffect(() => {
     const activeLink = sharedWorldLink || readStoredSharedWorldLink();
     if (!activeAccount && !activeLink) return;
     let unsubVault: (() => void) | null = null;
+    let pollInterval: number | null = null;
     let isCancelled = false;
+
+    const applyIncomingRemoteBundle = (
+      remoteBundle: CloudWorkspaceBundle,
+      isJoinedSharedWorld: boolean
+    ) => {
+      if (isCancelled) return;
+      // Ignore our own echo from this browser tab
+      if (
+        remoteBundle.lastEditorSessionId &&
+        remoteBundle.lastEditorSessionId === clientSessionIdRef.current
+      ) {
+        return;
+      }
+      // Ignore already-applied snapshot timestamp
+      if (
+        remoteBundle.updatedAtIso &&
+        remoteBundle.updatedAtIso === lastSavedOrReceivedIsoRef.current
+      ) {
+        return;
+      }
+
+      hydrateFromCloudBundle(remoteBundle, isJoinedSharedWorld);
+      const editorLabel = remoteBundle.lastEditorName || 'Anggota Tim';
+      setBackupStatus(`Live Sync (${editorLabel})`);
+      setLiveCollaboratorNotice(`Diperbarui secara real-time oleh ${editorLabel}`);
+      setHistoryToastText(`Live: ${editorLabel}`);
+      window.setTimeout(() => {
+        setHistoryToastText('');
+      }, 2800);
+    };
 
     const attachRealtimeListener = async () => {
       const { vaultKey, passwordToken, isJoinedSharedWorld } =
@@ -1887,41 +2025,47 @@ export default function App() {
         vaultKey,
         passwordToken || 'shared-vault-token',
         (remoteBundle) => {
-          // Ignore our own echo from this browser tab
-          if (
-            remoteBundle.lastEditorSessionId &&
-            remoteBundle.lastEditorSessionId === clientSessionIdRef.current
-          ) {
-            return;
-          }
-          // Ignore already-applied snapshot timestamp
-          if (
-            remoteBundle.updatedAtIso &&
-            remoteBundle.updatedAtIso === lastSavedOrReceivedIsoRef.current
-          ) {
-            return;
-          }
-
-          hydrateFromCloudBundle(remoteBundle, isJoinedSharedWorld);
-          const editorLabel = remoteBundle.lastEditorName || 'Anggota Tim';
-          setBackupStatus(`Live Sync (${editorLabel})`);
-          setLiveCollaboratorNotice(`Diperbarui secara real-time oleh ${editorLabel}`);
-          setHistoryToastText(`Live: ${editorLabel}`);
-          window.setTimeout(() => {
-            setHistoryToastText('');
-          }, 2800);
+          applyIncomingRemoteBundle(remoteBundle, isJoinedSharedWorld);
         }
       );
+
+      const checkLatestFromServer = async () => {
+        if (isCancelled || isHydratingCloudRef.current) return;
+        const res = await loadCloudAccountVaultFromFirestore(
+          vaultKey,
+          passwordToken || 'shared-vault-token',
+          true
+        );
+        if (!isCancelled && res.status === 'ok' && res.bundle) {
+          applyIncomingRemoteBundle(res.bundle, isJoinedSharedWorld);
+        }
+      };
+
+      const onWindowFocus = () => {
+        checkLatestFromServer();
+      };
+      window.addEventListener('focus', onWindowFocus);
+      pollInterval = window.setInterval(checkLatestFromServer, 3500);
+
+      return () => {
+        window.removeEventListener('focus', onWindowFocus);
+      };
     };
 
-    attachRealtimeListener();
+    let cleanupFocus: (() => void) | undefined;
+    attachRealtimeListener().then((fn) => {
+      cleanupFocus = fn;
+    });
 
     return () => {
       isCancelled = true;
       if (unsubVault) unsubVault();
+      if (pollInterval) window.clearInterval(pollInterval);
+      if (cleanupFocus) cleanupFocus();
     };
   }, [
     activeAccount?.uid,
+    activeAccount?.email,
     activeAccount?.emailLookupId,
     activeAccount?.joinedWorldVaultId,
     activeAccount?.joinedWorldPin,
@@ -1965,6 +2109,9 @@ export default function App() {
         setBackupStatus(
           isJoinedSharedWorld ? 'Live Team World Synced' : 'Cloud Database Synced'
         );
+      } else {
+        setHistoryToastText('Gagal Simpan Cloud');
+        window.setTimeout(() => setHistoryToastText(''), 3000);
       }
 
       if (isSupabaseConfigured()) {
@@ -1973,7 +2120,7 @@ export default function App() {
       if (currentUser && !isJoinedSharedWorld) {
         await saveWorkspaceBundleToFirestore(currentUser, bundle);
       }
-    }, 350);
+    }, 220);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -2489,6 +2636,7 @@ export default function App() {
     setSharedWorldLink(null);
     setLiveCollaboratorNotice('');
     try {
+      sessionStorage.removeItem(SHARED_WORLD_LINK_SESSION_KEY);
       localStorage.removeItem(SHARED_WORLD_LINK_SESSION_KEY);
       const targetPath = activeNav === 'dashboard' ? '/' : `/${activeNav}`;
       window.history.replaceState({ nav: activeNav }, '', targetPath);
@@ -2893,7 +3041,8 @@ export default function App() {
       isReadOnlyViewer ||
       activeNav !== 'articles' ||
       showStoryAdvancedWiki ||
-      isRestoringHistoryRef.current
+      isRestoringHistoryRef.current ||
+      isHydratingCloudRef.current
     )
       return;
     const hasContent = Boolean(
@@ -2915,7 +3064,7 @@ export default function App() {
     }
 
     const timer = window.setTimeout(() => {
-      if (isRestoringHistoryRef.current) return;
+      if (isRestoringHistoryRef.current || isHydratingCloudRef.current) return;
       const targetWorld = ensureActiveWorldForQuickCreate();
       const firstLine = (storySynopsis.trim() || storyText.trim())
         .split('\n')[0]
@@ -2981,7 +3130,7 @@ export default function App() {
         setSelectedArticleId(storyId);
       }
       setStorySavedToast(true);
-    }, 320);
+    }, 120);
 
     return () => window.clearTimeout(timer);
   }, [

@@ -254,7 +254,7 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     );
     window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 0);
+    }, 150);
   }, [selectedCharacterId, characterList, historyRevision]);
 
   const handleResetNewCharacter = () => {

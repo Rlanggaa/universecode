@@ -257,7 +257,7 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     setCustomIcon(sanitizeImageSrc(found.templateValues?.CustomIconUrl));
     window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 0);
+    }, 150);
   }, [selectedEntityId, entityList, mode, historyRevision]);
 
   const handleResetNew = () => {

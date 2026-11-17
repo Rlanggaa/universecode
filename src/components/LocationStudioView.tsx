@@ -207,7 +207,7 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     setOrganization(String(found.templateValues?.Organisasi || ''));
     window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 0);
+    }, 150);
   }, [selectedLocationId, locationList, historyRevision]);
 
   const handleResetNewLocation = () => {

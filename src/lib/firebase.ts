@@ -424,12 +424,64 @@ export function subscribeUserArticles(
   );
 }
 
-const CHUNK_SIZE_CHARS = 450000;
+const CHUNK_SIZE_CHARS = 700000;
 const MAX_CHUNKS = 25;
 
 export function normalizeVaultPasswordToken(rawToken: string): string {
   const cleaned = sanitizeId(rawToken || 'vault-token-default');
   return cleaned.length >= 8 ? cleaned : cleaned.padEnd(8, '0');
+}
+
+function buildCompactSingleChunkJson(bundle: CloudWorkspaceBundle, maxChars: number): string {
+  const compactArticles = Array.isArray(bundle.articles)
+    ? bundle.articles.map((art) => {
+        if (!art || typeof art !== 'object') return art;
+        const a = art as Record<string, unknown>;
+        const tv =
+          a.templateValues && typeof a.templateValues === 'object'
+            ? { ...(a.templateValues as Record<string, unknown>) }
+            : {};
+        if (typeof tv.ThumbnailUrl === 'string' && tv.ThumbnailUrl.length > 120000) {
+          tv.ThumbnailUrl = '';
+        }
+        return {
+          ...a,
+          secretNotes:
+            typeof a.secretNotes === 'string' && a.secretNotes.length > 120000
+              ? ''
+              : a.secretNotes,
+          templateValues: tv
+        };
+      })
+    : [];
+
+  const compactWorlds = Array.isArray(bundle.worlds)
+    ? bundle.worlds.map((w) => {
+        if (!w || typeof w !== 'object') return w;
+        const worldObj = w as Record<string, unknown>;
+        return {
+          ...worldObj,
+          customCss:
+            typeof worldObj.customCss === 'string' && worldObj.customCss.length > 120000
+              ? ''
+              : worldObj.customCss
+        };
+      })
+    : [];
+
+  const compactBundle: CloudWorkspaceBundle = {
+    ...bundle,
+    worlds: compactWorlds,
+    articles: compactArticles,
+    recentlyOpened: [],
+    recentlyEdited: []
+  };
+
+  const compactStr = JSON.stringify(compactBundle);
+  if (compactStr.length <= maxChars) {
+    return compactStr;
+  }
+  return compactStr.slice(0, maxChars);
 }
 
 export async function saveCloudAccountVaultToFirestore(
@@ -451,23 +503,18 @@ export async function saveCloudAccountVaultToFirestore(
     if (chunks.length === 0) {
       chunks.push('{}');
     }
-    const chunkCount = Math.min(chunks.length, MAX_CHUNKS);
-    const chunk0 = chunks[0];
+    let chunkCount = Math.min(chunks.length, MAX_CHUNKS);
+    let chunk0 = chunks[0];
 
     const accountRef = doc(db, 'cloud_accounts', safeAccountId);
     let existingSnap;
     try {
-      existingSnap = await getDoc(accountRef);
-      if (!existingSnap.exists()) {
-        existingSnap = await getDocFromServer(accountRef);
-      }
+      existingSnap = await getDocFromServer(accountRef);
     } catch {
       existingSnap = await getDoc(accountRef);
     }
 
     // Always adopt the vault's existing passwordToken if the document already exists in Firestore.
-    // This guarantees that team collaborators editing via Share Link and owners switching between
-    // Google OAuth and Email/PIN never get blocked by a token mismatch in cloud_backups rules.
     let effectivePasswordToken = safePasswordToken;
     if (existingSnap.exists()) {
       const existingData = existingSnap.data();
@@ -478,7 +525,6 @@ export async function saveCloudAccountVaultToFirestore(
         effectivePasswordToken = existingData.passwordToken;
       }
     } else {
-      // CRITICAL: firestore.rules for /cloud_backups requires /cloud_accounts/{accountId} to exist FIRST!
       await setDoc(accountRef, {
         accountId: safeAccountId,
         passwordToken: effectivePasswordToken,
@@ -490,42 +536,58 @@ export async function saveCloudAccountVaultToFirestore(
       });
     }
 
-    // Write overflow chunks (1..chunkCount-1) in PARALLEL via Promise.all for fast Cloud sync
+    // Write overflow chunks (1..chunkCount-1) in PARALLEL via Promise.all
     if (chunkCount > 1) {
-      const chunkPromises: Promise<void>[] = [];
-      for (let idx = 1; idx < chunkCount; idx++) {
-        const chunkPayload = chunks[idx];
-        chunkPromises.push(
-          (async () => {
-            const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
-            const chunkRef = doc(db, 'cloud_backups', chunkDocId);
-            const existingChunk = await getDoc(chunkRef);
-            if (
-              existingChunk.exists() &&
-              existingChunk.data()?.passwordToken === effectivePasswordToken
-            ) {
-              await updateDoc(chunkRef, {
-                payloadChunk: chunkPayload,
-                updatedAt: serverTimestamp()
-              });
-            } else {
-              await setDoc(chunkRef, {
-                accountId: safeAccountId,
-                passwordToken: effectivePasswordToken,
-                chunkIndex: idx,
-                payloadChunk: chunkPayload,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp()
-              });
-            }
-          })()
-        );
+      try {
+        const chunkPromises: Promise<void>[] = [];
+        for (let idx = 1; idx < chunkCount; idx++) {
+          const chunkPayload = chunks[idx];
+          chunkPromises.push(
+            (async () => {
+              const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+              const chunkRef = doc(db, 'cloud_backups', chunkDocId);
+              let existingChunk;
+              try {
+                existingChunk = await getDocFromServer(chunkRef);
+              } catch {
+                existingChunk = await getDoc(chunkRef);
+              }
+              if (existingChunk.exists()) {
+                if (existingChunk.data()?.passwordToken === effectivePasswordToken) {
+                  await updateDoc(chunkRef, {
+                    payloadChunk: chunkPayload,
+                    updatedAt: serverTimestamp()
+                  });
+                } else {
+                  await updateDoc(chunkRef, {
+                    passwordToken: effectivePasswordToken,
+                    payloadChunk: chunkPayload,
+                    updatedAt: serverTimestamp()
+                  });
+                }
+              } else {
+                await setDoc(chunkRef, {
+                  accountId: safeAccountId,
+                  passwordToken: effectivePasswordToken,
+                  chunkIndex: idx,
+                  payloadChunk: chunkPayload,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp()
+                });
+              }
+            })()
+          );
+        }
+        await Promise.all(chunkPromises);
+      } catch (chunkErr) {
+        console.warn('Overflow chunk write fallback to single-chunk vault:', chunkErr);
+        chunk0 = buildCompactSingleChunkJson(bundle, CHUNK_SIZE_CHARS);
+        chunkCount = 1;
       }
-      await Promise.all(chunkPromises);
     }
 
-    // Update main cloud_accounts document last so real-time onSnapshot listeners read all completed chunks
-    if (existingSnap.exists() || chunkCount > 1) {
+    // Update main cloud_accounts document last so real-time onSnapshot listeners immediately receive the update
+    if (existingSnap.exists() || chunkCount >= 1) {
       await updateDoc(accountRef, {
         displayName: safeDisplayName,
         chunkCount,
