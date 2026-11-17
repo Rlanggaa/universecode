@@ -26,26 +26,16 @@ import firebaseConfig from '../../firebase-applet-config.json';
 import { CloudWorkspaceBundle } from './supabase';
 
 const resolvedFirebaseConfig = {
-  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY || '').trim() || firebaseConfig.apiKey,
-  authDomain:
-    (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim() || firebaseConfig.authDomain,
-  projectId:
-    (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim() || firebaseConfig.projectId,
-  storageBucket:
-    (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '').trim() ||
-    firebaseConfig.storageBucket,
-  messagingSenderId:
-    (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim() ||
-    firebaseConfig.messagingSenderId,
-  appId: (import.meta.env.VITE_FIREBASE_APP_ID || '').trim() || firebaseConfig.appId
+  apiKey: firebaseConfig.apiKey,
+  authDomain: firebaseConfig.authDomain,
+  projectId: firebaseConfig.projectId,
+  storageBucket: firebaseConfig.storageBucket,
+  messagingSenderId: firebaseConfig.messagingSenderId,
+  appId: firebaseConfig.appId,
+  measurementId: firebaseConfig.measurementId || undefined
 };
 
-const resolvedDatabaseId =
-  (import.meta.env.VITE_FIREBASE_DATABASE_ID || '').trim() ||
-  ((import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim() &&
-  (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim() !== firebaseConfig.projectId
-    ? '(default)'
-    : firebaseConfig.firestoreDatabaseId);
+const resolvedDatabaseId = firebaseConfig.firestoreDatabaseId || '(default)';
 
 export const ACTIVE_FIREBASE_PROJECT_ID = resolvedFirebaseConfig.projectId;
 export const ACTIVE_FIREBASE_AUTH_DOMAIN = resolvedFirebaseConfig.authDomain;
