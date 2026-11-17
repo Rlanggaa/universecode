@@ -437,25 +437,10 @@ export async function saveCloudAccountVaultToFirestore(
             'Email ini sudah terdaftar di Cloud dengan Password/PIN yang berbeda. Masukkan Password/PIN yang sesuai.'
         };
       }
-      await updateDoc(accountRef, {
-        displayName: safeDisplayName,
-        chunkCount,
-        payloadChunk0: chunk0,
-        updatedAt: serverTimestamp()
-      });
-    } else {
-      await setDoc(accountRef, {
-        accountId: safeAccountId,
-        passwordToken: safePasswordToken,
-        displayName: safeDisplayName,
-        chunkCount,
-        payloadChunk0: chunk0,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
     }
 
-    // Save additional overflow chunks (1..chunkCount-1)
+    // Write overflow chunks (1..chunkCount-1) FIRST so real-time onSnapshot listeners on accountRef
+    // always read up-to-date overflow chunks when accountRef triggers!
     for (let idx = 1; idx < chunkCount; idx++) {
       const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
       const chunkRef = doc(db, 'cloud_backups', chunkDocId);
@@ -483,6 +468,25 @@ export async function saveCloudAccountVaultToFirestore(
       }
     }
 
+    if (existingSnap.exists()) {
+      await updateDoc(accountRef, {
+        displayName: safeDisplayName,
+        chunkCount,
+        payloadChunk0: chunk0,
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      await setDoc(accountRef, {
+        accountId: safeAccountId,
+        passwordToken: safePasswordToken,
+        displayName: safeDisplayName,
+        chunkCount,
+        payloadChunk0: chunk0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    }
+
     return { ok: true };
   } catch (err) {
     console.error('CloudAccountVault save error:', err);
@@ -495,15 +499,16 @@ export async function saveCloudAccountVaultToFirestore(
 
 export async function loadCloudAccountVaultFromFirestore(
   emailLookupId: string,
-  passwordToken: string
+  passwordToken?: string
 ): Promise<{
   status: 'ok' | 'wrong_password' | 'not_found' | 'error';
   bundle: CloudWorkspaceBundle | null;
   displayName?: string;
+  passwordToken?: string;
   error?: string;
 }> {
   const safeAccountId = sanitizeId(emailLookupId);
-  const safePasswordToken = sanitizeId(passwordToken);
+  const safePasswordToken = passwordToken ? sanitizeId(passwordToken) : '';
 
   try {
     const accountRef = doc(db, 'cloud_accounts', safeAccountId);
@@ -519,7 +524,7 @@ export async function loadCloudAccountVaultFromFirestore(
     }
 
     const data = snap.data();
-    if (data.passwordToken && data.passwordToken !== safePasswordToken) {
+    if (safePasswordToken && data.passwordToken && data.passwordToken !== safePasswordToken) {
       return {
         status: 'wrong_password',
         bundle: null,
@@ -553,7 +558,8 @@ export async function loadCloudAccountVaultFromFirestore(
       return {
         status: 'ok',
         bundle: parsed,
-        displayName: typeof data.displayName === 'string' ? data.displayName : undefined
+        displayName: typeof data.displayName === 'string' ? data.displayName : undefined,
+        passwordToken: typeof data.passwordToken === 'string' ? data.passwordToken : undefined
       };
     }
 
@@ -567,5 +573,68 @@ export async function loadCloudAccountVaultFromFirestore(
     };
   }
 }
+
+/**
+ * Real-time Firestore listener for collaborative multi-device / multi-user editing.
+ * Triggers immediately whenever any connected device or team member saves changes to the Cloud Vault.
+ */
+export function subscribeCloudAccountVault(
+  emailLookupId: string,
+  passwordToken: string,
+  onRemoteBundle: (bundle: CloudWorkspaceBundle, displayName?: string) => void
+): Unsubscribe {
+  const safeAccountId = sanitizeId(emailLookupId);
+  const safePasswordToken = sanitizeId(passwordToken);
+  const accountRef = doc(db, 'cloud_accounts', safeAccountId);
+
+  return onSnapshot(
+    accountRef,
+    async (snap) => {
+      if (!snap.exists()) return;
+      // Ignore local pending writes so we only react to committed server updates from collaborators
+      if (snap.metadata.hasPendingWrites) return;
+
+      const data = snap.data();
+      if (safePasswordToken && data.passwordToken && data.passwordToken !== safePasswordToken) {
+        return;
+      }
+
+      const chunkCount = typeof data.chunkCount === 'number' ? data.chunkCount : 1;
+      let fullJson = typeof data.payloadChunk0 === 'string' ? data.payloadChunk0 : '';
+
+      for (let idx = 1; idx < chunkCount; idx++) {
+        const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+        const chunkRef = doc(db, 'cloud_backups', chunkDocId);
+        try {
+          const chunkSnap = await getDocFromServer(chunkRef);
+          if (chunkSnap.exists()) {
+            const cData = chunkSnap.data();
+            if (typeof cData.payloadChunk === 'string') {
+              fullJson += cData.payloadChunk;
+            }
+          }
+        } catch {
+          // ignore transient chunk read error
+        }
+      }
+
+      if (fullJson && fullJson.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(fullJson) as CloudWorkspaceBundle;
+          onRemoteBundle(
+            parsed,
+            typeof data.displayName === 'string' ? data.displayName : undefined
+          );
+        } catch {
+          // ignore malformed JSON
+        }
+      }
+    },
+    (err) => {
+      console.warn('Real-time Cloud Vault listener warning:', err);
+    }
+  );
+}
+
 
 

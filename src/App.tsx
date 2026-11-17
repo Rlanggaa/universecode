@@ -118,6 +118,7 @@ import {
   loadWorkspaceBundleFromFirestore,
   saveCloudAccountVaultToFirestore,
   loadCloudAccountVaultFromFirestore,
+  subscribeCloudAccountVault,
   User
 } from './lib/firebase';
 import {
@@ -129,7 +130,9 @@ import {
   hasWorkspaceBundleContent,
   CLOUD_ACCOUNT_SESSION_KEY,
   CloudAccountSession,
-  CloudWorkspaceBundle
+  CloudWorkspaceBundle,
+  CloudTeamMember,
+  TeamRolePermission
 } from './lib/supabase';
 
 type PrimaryNavId =
@@ -249,6 +252,18 @@ export default function App() {
   const [profileBio, setProfileBio] = useState<string>('');
   const [profileAvatarUrl, setProfileAvatarUrl] = useState<string>('');
   const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Real-time Multi-User Collaboration & Role Permissions (Owner / Editor / Viewer)
+  const clientSessionIdRef = useRef<string>(
+    `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  );
+  const lastSavedOrReceivedIsoRef = useRef<string>('');
+  const [teamMembers, setTeamMembers] = useState<CloudTeamMember[]>([]);
+  const [newMemberEmailInput, setNewMemberEmailInput] = useState<string>('');
+  const [newMemberRoleInput, setNewMemberRoleInput] = useState<TeamRolePermission>('editor');
+  const [joinOwnerEmailInput, setJoinOwnerEmailInput] = useState<string>('');
+  const [joinOwnerPinInput, setJoinOwnerPinInput] = useState<string>('');
+  const [liveCollaboratorNotice, setLiveCollaboratorNotice] = useState<string>('');
 
   const activeAccount: CloudAccountSession | null = useMemo(() => {
     if (cloudAccount) return cloudAccount;
@@ -822,8 +837,14 @@ export default function App() {
   });
 
   // Helper to apply a loaded Cloud or JSON bundle into state & localStorage
-  const hydrateFromCloudBundle = (bundle: Partial<CloudWorkspaceBundle>) => {
+  const hydrateFromCloudBundle = (
+    bundle: Partial<CloudWorkspaceBundle>,
+    preservePersonalProfile = false
+  ) => {
     isHydratingCloudRef.current = true;
+    if (bundle.updatedAtIso) {
+      lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+    }
     if (Array.isArray(bundle.worlds)) {
       const singleWorlds = (bundle.worlds as World[]).slice(0, 1);
       setWorlds(singleWorlds);
@@ -852,7 +873,11 @@ export default function App() {
     if (Array.isArray(bundle.recentlyEdited))
       setRecentlyEdited(bundle.recentlyEdited as RecentActivityItem[]);
 
-    if (bundle.userProfile) {
+    if (Array.isArray(bundle.teamMembers)) {
+      setTeamMembers(bundle.teamMembers as CloudTeamMember[]);
+    }
+
+    if (bundle.userProfile && !preservePersonalProfile && !activeAccount?.joinedWorldVaultId) {
       setProfileDisplayName(bundle.userProfile.displayName || '');
       setProfileRoleTitle(bundle.userProfile.roleTitle || 'Worldbuilder & Storyteller');
       setProfileBio(bundle.userProfile.bio || '');
@@ -873,7 +898,7 @@ export default function App() {
     setHistoryRevision((r) => r + 1);
     window.setTimeout(() => {
       isHydratingCloudRef.current = false;
-    }, 150);
+    }, 220);
   };
 
   const createEmptyWorkspaceBundle = (): CloudWorkspaceBundle => ({
@@ -892,18 +917,84 @@ export default function App() {
     recentlyEdited: [],
     timelineStudioRaw: '[]',
     relationshipStudioRaw: '{}',
+    teamMembers: [],
     updatedAtIso: new Date().toISOString()
   });
 
   const buildCurrentWorkspaceBundle = (
-    overrideProfile?: CloudAccountSession
+    overrideProfile?: CloudAccountSession,
+    overrideTeamMembers?: CloudTeamMember[]
   ): CloudWorkspaceBundle => {
     const acct = overrideProfile || activeAccount;
+    const nowIso = new Date().toISOString();
+
+    // Ensure any live Story Studio edits are merged into the articles list immediately
+    let mergedArticles = articles;
+    const hasLiveStoryContent = Boolean(
+      storyTitle.trim() || storySynopsis.trim() || storyText.trim() || storyPagesJson.trim()
+    );
+    if (hasLiveStoryContent) {
+      const existingStory = articles.find(
+        (a) => a.id === activeStoryId || a.category === 'Stories' || a.tags.includes('Story')
+      );
+      const storyId = existingStory?.id || activeStoryId || 'story-main';
+      const resolvedWorldId = worlds[0]?.id || activeWorldId || 'world-primary';
+      const resolvedTitle =
+        storyTitle.trim() || existingStory?.title || 'Main Story';
+      const nowStamp = nowIso.slice(0, 16).replace('T', ' ');
+      const wordCount = `${storySynopsis} ${storyText}`
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length;
+
+      const syncedStoryArticle: Article = {
+        id: storyId,
+        worldId: resolvedWorldId,
+        title: resolvedTitle,
+        aliases: [],
+        templateType: 'Generic Article',
+        category: 'Stories',
+        tags: ['Story'],
+        summary: storySynopsis.trim() || storyText.trim().slice(0, 160),
+        content: storyText,
+        secretNotes: storyThumbnail || '',
+        spoilerWarning: 'Hanya admin dan yang diizinkan yang dapat mengakses Full Story',
+        templateValues: {
+          Sinopsis: storySynopsis,
+          FullStory: storyText,
+          StoryPagesJson: storyPagesJson,
+          AccessControl: 'Admin & Authorized Only',
+          Thumbnail: 'None'
+        },
+        status: 'published',
+        visibility: 'private',
+        linkedEntityIds: [],
+        galleryCaptions: [],
+        versions: existingStory?.versions || [
+          {
+            id: `v-${Date.now()}`,
+            timestamp: nowStamp,
+            author: acct?.displayName || 'Creator',
+            note: 'Auto-synced Story',
+            contentSnapshot: storyText
+          }
+        ],
+        comments: existingStory?.comments || [],
+        wordCount,
+        updatedAt: nowStamp
+      };
+
+      const nonStory = articles.filter(
+        (a) => a.id !== storyId && a.category !== 'Stories' && !a.tags.includes('Story')
+      );
+      mergedArticles = [syncedStoryArticle, ...nonStory];
+    }
+
     const stateBundle: CloudWorkspaceBundle = {
       worlds: worlds.slice(0, 1),
       activeWorldId: worlds[0]?.id || activeWorldId,
       universes,
-      articles,
+      articles: mergedArticles,
       relationships,
       maps,
       timelineEvents,
@@ -923,7 +1014,11 @@ export default function App() {
             avatarUrl: acct.avatarUrl ?? profileAvatarUrl ?? ''
           }
         : undefined,
-      updatedAtIso: new Date().toISOString()
+      teamMembers: overrideTeamMembers ?? teamMembers,
+      lastEditorSessionId: clientSessionIdRef.current,
+      lastEditorName: acct?.displayName || profileDisplayName || 'Creator',
+      lastEditorEmail: acct?.email || '',
+      updatedAtIso: nowIso
     };
 
     // If called during initial mount before state hydration finishes, fallback to localStorage
@@ -939,7 +1034,11 @@ export default function App() {
               timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
               relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
               userProfile: stateBundle.userProfile,
-              updatedAtIso: new Date().toISOString()
+              teamMembers: overrideTeamMembers ?? (parsed.teamMembers as CloudTeamMember[]) ?? [],
+              lastEditorSessionId: clientSessionIdRef.current,
+              lastEditorName: acct?.displayName || 'Creator',
+              lastEditorEmail: acct?.email || '',
+              updatedAtIso: nowIso
             };
           }
         }
@@ -956,6 +1055,38 @@ export default function App() {
     if (account.email) return deriveEmailLookupId(account.email);
     return account.uid;
   };
+
+  // Resolve target vault (either the user's own Cloud Vault OR a joined shared Team World Vault)
+  const resolveTargetVaultCredentials = async (
+    account: CloudAccountSession
+  ): Promise<{ vaultKey: string; passwordToken: string; isJoinedSharedWorld: boolean }> => {
+    if (account.joinedWorldVaultId && account.joinedWorldPin) {
+      return {
+        vaultKey: account.joinedWorldVaultId,
+        passwordToken: account.joinedWorldPin,
+        isJoinedSharedWorld: true
+      };
+    }
+    const ownKey = await resolveEmailLookupKey(account);
+    return {
+      vaultKey: ownKey,
+      passwordToken: account.uid,
+      isJoinedSharedWorld: false
+    };
+  };
+
+  // Determine the current user's effective role in the active World ('owner' | 'editor' | 'viewer')
+  const currentUserTeamRole: TeamRolePermission = useMemo(() => {
+    if (!activeAccount) return 'owner';
+    if (!activeAccount.joinedWorldVaultId) return 'owner';
+    const myEmail = (activeAccount.email || '').trim().toLowerCase();
+    const matchedMember = teamMembers.find(
+      (m) => m.email.trim().toLowerCase() === myEmail
+    );
+    if (matchedMember) return matchedMember.role;
+    // If Owner hasn't restricted the list yet or gave the PIN directly, default to 'editor'
+    return 'editor';
+  }, [activeAccount, teamMembers]);
 
   const syncAccountWorkspaceOnLogin = async (
     account: CloudAccountSession,
@@ -1238,40 +1369,111 @@ export default function App() {
     };
   }, []);
 
+  // REAL-TIME LISTENER (Firestore onSnapshot):
+  // Immediately receives & applies edits made by team members on other browsers/devices in < 1 second
+  useEffect(() => {
+    if (!activeAccount) return;
+    let unsubVault: (() => void) | null = null;
+    let isCancelled = false;
+
+    const attachRealtimeListener = async () => {
+      const { vaultKey, passwordToken, isJoinedSharedWorld } =
+        await resolveTargetVaultCredentials(activeAccount);
+      if (isCancelled) return;
+
+      unsubVault = subscribeCloudAccountVault(
+        vaultKey,
+        passwordToken,
+        (remoteBundle) => {
+          // Ignore our own echo from this browser tab
+          if (
+            remoteBundle.lastEditorSessionId &&
+            remoteBundle.lastEditorSessionId === clientSessionIdRef.current
+          ) {
+            return;
+          }
+          // Ignore already-applied snapshot timestamp
+          if (
+            remoteBundle.updatedAtIso &&
+            remoteBundle.updatedAtIso === lastSavedOrReceivedIsoRef.current
+          ) {
+            return;
+          }
+
+          hydrateFromCloudBundle(remoteBundle, isJoinedSharedWorld);
+          const editorLabel = remoteBundle.lastEditorName || 'Anggota Tim';
+          setBackupStatus(`Live Sync (${editorLabel})`);
+          setLiveCollaboratorNotice(`Diperbarui secara real-time oleh ${editorLabel}`);
+          setHistoryToastText(`Live: ${editorLabel}`);
+          window.setTimeout(() => {
+            setHistoryToastText('');
+          }, 2800);
+        }
+      );
+    };
+
+    attachRealtimeListener();
+
+    return () => {
+      isCancelled = true;
+      if (unsubVault) unsubVault();
+    };
+  }, [
+    activeAccount?.uid,
+    activeAccount?.emailLookupId,
+    activeAccount?.joinedWorldVaultId,
+    activeAccount?.joinedWorldPin
+  ]);
+
   // Automatically sync workspace changes to Cloud (CloudAccountVault + Supabase + Firestore) whenever logged-in user edits data
   useEffect(() => {
     if (!activeAccount || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) return;
+    // If joined as Viewer (read-only), do not overwrite the shared Cloud Vault
+    if (currentUserTeamRole === 'viewer') return;
 
     const timer = window.setTimeout(async () => {
+      if (isHydratingCloudRef.current) return;
       const bundle: CloudWorkspaceBundle = buildCurrentWorkspaceBundle();
-      const emailLookupKey = await resolveEmailLookupKey(activeAccount);
+      lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+
+      const { vaultKey, passwordToken, isJoinedSharedWorld } =
+        await resolveTargetVaultCredentials(activeAccount);
 
       const vaultRes = await saveCloudAccountVaultToFirestore(
-        emailLookupKey,
-        activeAccount.uid,
-        activeAccount.displayName,
+        vaultKey,
+        passwordToken,
+        isJoinedSharedWorld
+          ? activeAccount.joinedWorldOwnerName || activeAccount.displayName
+          : activeAccount.displayName,
         bundle
       );
       if (vaultRes.ok) {
-        setBackupStatus('Cloud Database Synced');
+        setBackupStatus(
+          isJoinedSharedWorld ? 'Live Team World Synced' : 'Cloud Database Synced'
+        );
       }
 
       if (isSupabaseConfigured()) {
-        await saveWorkspaceBundleToSupabase(emailLookupKey, activeAccount.email, bundle);
+        await saveWorkspaceBundleToSupabase(vaultKey, activeAccount.email, bundle);
       }
-      if (currentUser) {
+      if (currentUser && !isJoinedSharedWorld) {
         await saveWorkspaceBundleToFirestore(currentUser, bundle);
       }
-    }, 1000);
+    }, 600);
 
     return () => window.clearTimeout(timer);
   }, [
     activeAccount,
     currentUser,
+    currentUserTeamRole,
     worlds,
     activeWorldId,
     universes,
     articles,
+    storyTitle,
+    storySynopsis,
+    storyText,
+    storyPagesJson,
     relationships,
     maps,
     timelineEvents,
@@ -1281,6 +1483,7 @@ export default function App() {
     digitalAssets,
     recentlyOpened,
     recentlyEdited,
+    teamMembers,
     subStudioTick
   ]);
 
@@ -1440,19 +1643,170 @@ export default function App() {
     }
   };
 
+  // Owner: Add or update a team member's permission (Editor / Viewer) on this World
+  const handleAddTeamMemberPermission = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAccount) return;
+    const cleanEmail = newMemberEmailInput.trim().toLowerCase();
+    if (!cleanEmail) return;
+
+    const nextMember: CloudTeamMember = {
+      email: cleanEmail,
+      displayName: cleanEmail.includes('@') ? cleanEmail.split('@')[0] : cleanEmail,
+      role: newMemberRoleInput,
+      addedAtIso: new Date().toISOString()
+    };
+
+    const updatedList = [
+      nextMember,
+      ...teamMembers.filter((m) => m.email.toLowerCase() !== cleanEmail)
+    ];
+    setTeamMembers(updatedList);
+    setNewMemberEmailInput('');
+
+    setIsSyncingCloud(true);
+    try {
+      const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedList);
+      lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+      const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
+      await saveCloudAccountVaultToFirestore(
+        vaultKey,
+        passwordToken,
+        activeAccount.displayName,
+        bundle
+      );
+      setAuthStatusMessage(
+        `Izin akses untuk "${cleanEmail}" (${
+          newMemberRoleInput === 'editor' ? 'Editor - Bisa Edit' : 'Viewer - Hanya Baca'
+        }) berhasil disimpan ke Cloud!`
+      );
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  const handleRemoveTeamMemberPermission = async (targetEmail: string) => {
+    if (!activeAccount) return;
+    const updatedList = teamMembers.filter(
+      (m) => m.email.toLowerCase() !== targetEmail.toLowerCase()
+    );
+    setTeamMembers(updatedList);
+    const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedList);
+    lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+    const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
+    await saveCloudAccountVaultToFirestore(
+      vaultKey,
+      passwordToken,
+      activeAccount.displayName,
+      bundle
+    );
+  };
+
+  // Team Member: Join an Owner's Shared World using their own separate personal account!
+  const handleJoinSharedTeamWorld = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAccount) return;
+    const ownerEmail = joinOwnerEmailInput.trim().toLowerCase();
+    const ownerPin = joinOwnerPinInput.trim();
+    if (!ownerEmail || !ownerPin) {
+      setAuthErrorMessage('Masukkan Email/Username Pemilik World dan Password/PIN Kolaborasi.');
+      return;
+    }
+
+    setIsSyncingCloud(true);
+    setAuthErrorMessage('');
+    setAuthStatusMessage('');
+    try {
+      const targetVaultKey = await deriveEmailLookupId(ownerEmail);
+      const targetPinToken = await deriveCloudAccountId(ownerEmail, ownerPin);
+
+      const vaultRes = await loadCloudAccountVaultFromFirestore(
+        targetVaultKey,
+        targetPinToken
+      );
+      if (vaultRes.status === 'not_found') {
+        setAuthErrorMessage(
+          `World milik "${ownerEmail}" tidak ditemukan di Cloud. Pastikan Pemilik World sudah mendaftar.`
+        );
+        return;
+      }
+      if (vaultRes.status === 'wrong_password') {
+        setAuthErrorMessage(
+          'Password / PIN Kolaborasi World tidak sesuai dengan milik Pemilik World.'
+        );
+        return;
+      }
+
+      const updatedSession: CloudAccountSession = {
+        ...activeAccount,
+        joinedWorldVaultId: targetVaultKey,
+        joinedWorldPin: targetPinToken,
+        joinedWorldOwnerName: vaultRes.displayName || ownerEmail
+      };
+      setCloudAccount(updatedSession);
+      try {
+        localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(updatedSession));
+      } catch {
+        // ignore
+      }
+
+      if (vaultRes.bundle) {
+        hydrateFromCloudBundle(vaultRes.bundle, true);
+      }
+      setJoinOwnerPinInput('');
+      setBackupStatus('Live Team World Synced');
+      setAuthStatusMessage(
+        `Berhasil terhubung secara Real-Time ke World milik "${
+          vaultRes.displayName || ownerEmail
+        }" menggunakan akun pribadi Anda (${activeAccount.displayName})!`
+      );
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // Team Member: Leave shared world and return to their own personal workspace
+  const handleLeaveSharedTeamWorld = async () => {
+    if (!activeAccount) return;
+    const updatedSession: CloudAccountSession = {
+      ...activeAccount,
+      joinedWorldVaultId: undefined,
+      joinedWorldPin: undefined,
+      joinedWorldOwnerName: undefined
+    };
+    setCloudAccount(updatedSession);
+    try {
+      localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(updatedSession));
+    } catch {
+      // ignore
+    }
+    await syncAccountWorkspaceOnLogin(updatedSession, currentUser, true, 'session-restore');
+    setAuthStatusMessage('Anda telah kembali ke Workspace Pribadi Anda.');
+  };
+
   const handleManualCloudPush = async () => {
     if (!activeAccount) return;
+    if (currentUserTeamRole === 'viewer') {
+      setAuthErrorMessage(
+        'Akun Anda memiliki izin "Viewer (Hanya Baca)" pada World ini sehingga tidak dapat menimpa data Cloud.'
+      );
+      return;
+    }
     setIsSyncingCloud(true);
     setAuthErrorMessage('');
     setAuthStatusMessage('');
     try {
       const bundle = buildCurrentWorkspaceBundle();
-      const emailLookupKey = await resolveEmailLookupKey(activeAccount);
+      lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+      const { vaultKey, passwordToken, isJoinedSharedWorld } =
+        await resolveTargetVaultCredentials(activeAccount);
 
       const vaultRes = await saveCloudAccountVaultToFirestore(
-        emailLookupKey,
-        activeAccount.uid,
-        activeAccount.displayName,
+        vaultKey,
+        passwordToken,
+        isJoinedSharedWorld
+          ? activeAccount.joinedWorldOwnerName || activeAccount.displayName
+          : activeAccount.displayName,
         bundle
       );
 
@@ -1465,16 +1819,18 @@ export default function App() {
 
       if (isSupabaseConfigured()) {
         await saveWorkspaceBundleToSupabase(
-          emailLookupKey,
+          vaultKey,
           activeAccount.email,
           bundle
         );
       }
-      if (currentUser) {
+      if (currentUser && !isJoinedSharedWorld) {
         await saveWorkspaceBundleToFirestore(currentUser, bundle);
       }
-      setBackupStatus('Cloud Database Synced');
-      setAuthStatusMessage('Seluruh data workspace berhasil disimpan ke Cloud Database!');
+      setBackupStatus(
+        isJoinedSharedWorld ? 'Live Team World Synced' : 'Cloud Database Synced'
+      );
+      setAuthStatusMessage('Seluruh data workspace berhasil disimpan & disiarkan secara Real-Time ke tim!');
     } finally {
       setIsSyncingCloud(false);
     }
@@ -1486,12 +1842,13 @@ export default function App() {
     setAuthErrorMessage('');
     setAuthStatusMessage('');
     try {
-      const emailLookupKey = await resolveEmailLookupKey(activeAccount);
+      const { vaultKey, passwordToken, isJoinedSharedWorld } =
+        await resolveTargetVaultCredentials(activeAccount);
       let bundle: CloudWorkspaceBundle | null = null;
 
       const vaultRes = await loadCloudAccountVaultFromFirestore(
-        emailLookupKey,
-        activeAccount.uid
+        vaultKey,
+        passwordToken
       );
       if (vaultRes.status === 'wrong_password') {
         setAuthErrorMessage(
@@ -1504,18 +1861,20 @@ export default function App() {
       }
 
       if (!hasWorkspaceBundleContent(bundle) && isSupabaseConfigured()) {
-        const supaRes = await loadWorkspaceBundleFromSupabase(emailLookupKey);
+        const supaRes = await loadWorkspaceBundleFromSupabase(vaultKey);
         if (supaRes.bundle) {
           bundle = supaRes.bundle;
         }
       }
-      if (!hasWorkspaceBundleContent(bundle) && currentUser) {
+      if (!hasWorkspaceBundleContent(bundle) && currentUser && !isJoinedSharedWorld) {
         bundle = await loadWorkspaceBundleFromFirestore(currentUser);
       }
 
       if (bundle && hasWorkspaceBundleContent(bundle)) {
-        hydrateFromCloudBundle(bundle);
-        setBackupStatus('Cloud Database Synced');
+        hydrateFromCloudBundle(bundle, isJoinedSharedWorld);
+        setBackupStatus(
+          isJoinedSharedWorld ? 'Live Team World Synced' : 'Cloud Database Synced'
+        );
         setAuthStatusMessage('Data terbaru dari Cloud berhasil dimuat ke browser ini!');
       } else if (vaultRes.status === 'ok') {
         setAuthStatusMessage(
@@ -4640,7 +4999,7 @@ export default function App() {
                   <div className="grid grid-cols-2 gap-2.5">
                     <button
                       type="button"
-                      disabled={isSyncingCloud}
+                      disabled={isSyncingCloud || currentUserTeamRole === 'viewer'}
                       onClick={handleManualCloudPush}
                       className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
                     >
@@ -4658,8 +5017,165 @@ export default function App() {
                     </button>
                   </div>
 
+                  {/* ========================================================== */}
+                  {/* KOLABORASI TIM MULTI-AKUN & IZIN ROLE (OWNER/EDITOR/VIEWER)*/}
+                  {/* ========================================================== */}
+                  <div className="p-4 rounded-2xl bg-[#f8f9fc] border border-[#cbd3e6] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold text-[#181b26]">
+                        Kolaborasi Tim Real-Time (Beda Akun, Satu World)
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          currentUserTeamRole === 'owner'
+                            ? 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                            : currentUserTeamRole === 'editor'
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            : 'bg-amber-100 text-amber-800 border border-amber-300'
+                        }`}
+                      >
+                        Role: {currentUserTeamRole.toUpperCase()}
+                      </span>
+                    </div>
+
+                    {liveCollaboratorNotice && (
+                      <div className="px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-[11px] font-medium">
+                        ⚡ {liveCollaboratorNotice}
+                      </div>
+                    )}
+
+                    {activeAccount.joinedWorldVaultId ? (
+                      <div className="space-y-2.5">
+                        <div className="p-3 rounded-xl bg-white border border-[#dce3f2] text-xs space-y-1">
+                          <div className="font-semibold text-[#181b26]">
+                            Terhubung ke World Tim:{' '}
+                            <span className="text-[#6d7696]">
+                              {activeAccount.joinedWorldOwnerName || 'Shared World'}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-[#52586e]">
+                            Anda masuk menggunakan akun pribadi <strong>{activeAccount.displayName}</strong> dengan hak akses{' '}
+                            <strong>
+                              {currentUserTeamRole === 'editor'
+                                ? 'Editor (Dapat menulis & mengedit secara real-time)'
+                                : 'Viewer (Hanya baca)'}
+                            </strong>.
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleLeaveSharedTeamWorld}
+                          className="w-full py-2 rounded-xl border border-[#879fd0] bg-white hover:bg-[#eef1f8] text-[#181b26] text-xs font-semibold transition cursor-pointer"
+                        >
+                          Kembali ke Workspace Pribadi Saya
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {/* Section A: Manage Team Permissions on My World (Owner) */}
+                        <form onSubmit={handleAddTeamMemberPermission} className="space-y-2">
+                          <label className="block text-[11px] font-semibold text-[#52586e]">
+                            1. Atur Izin Anggota Tim di World Anda (Sebagai Owner):
+                          </label>
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              value={newMemberEmailInput}
+                              onChange={(e) => setNewMemberEmailInput(e.target.value)}
+                              placeholder="Email/username tim..."
+                              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                            />
+                            <select
+                              value={newMemberRoleInput}
+                              onChange={(e) =>
+                                setNewMemberRoleInput(e.target.value as TeamRolePermission)
+                              }
+                              className="px-2 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs font-semibold text-[#181b26]"
+                            >
+                              <option value="editor">Editor</option>
+                              <option value="viewer">Viewer</option>
+                            </select>
+                            <button
+                              type="submit"
+                              className="px-3 py-1.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold shrink-0 cursor-pointer"
+                            >
+                              + Izin
+                            </button>
+                          </div>
+                        </form>
+
+                        {teamMembers.length > 0 && (
+                          <div className="space-y-1.5 max-h-28 overflow-y-auto pr-1">
+                            {teamMembers.map((mem) => (
+                              <div
+                                key={mem.email}
+                                className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-white border border-[#dce3f2] text-[11px]"
+                              >
+                                <span className="font-medium text-[#181b26] truncate">
+                                  {mem.email}
+                                </span>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      mem.role === 'editor'
+                                        ? 'bg-emerald-100 text-emerald-800'
+                                        : 'bg-amber-100 text-amber-800'
+                                    }`}
+                                  >
+                                    {mem.role === 'editor' ? 'Editor' : 'Viewer'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTeamMemberPermission(mem.email)}
+                                    className="text-rose-600 hover:underline font-bold"
+                                    title="Hapus anggota"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Section B: Join Another Owner's Shared World */}
+                        <form
+                          onSubmit={handleJoinSharedTeamWorld}
+                          className="pt-2.5 border-t border-[#dce3f2] space-y-2"
+                        >
+                          <label className="block text-[11px] font-semibold text-[#52586e]">
+                            2. Atau Gabung ke World Tim Lain (Tetap Pakai Akun Pribadi Anda):
+                          </label>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                            <input
+                              type="text"
+                              value={joinOwnerEmailInput}
+                              onChange={(e) => setJoinOwnerEmailInput(e.target.value)}
+                              placeholder="Email/Username Owner"
+                              className="px-2.5 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                            />
+                            <input
+                              type="password"
+                              value={joinOwnerPinInput}
+                              onChange={(e) => setJoinOwnerPinInput(e.target.value)}
+                              placeholder="PIN / Password World"
+                              className="px-2.5 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                            />
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={isSyncingCloud}
+                            className="w-full py-1.5 rounded-xl bg-white hover:bg-[#eef1f8] border border-[#6d7696] text-[#181b26] text-xs font-bold transition cursor-pointer"
+                          >
+                            Hubungkan ke World Tim Secara Real-Time
+                          </button>
+                        </form>
+                      </div>
+                    )}
+                  </div>
+
                   <p className="text-[11px] text-[#52586e] leading-relaxed">
-                    Seluruh perubahan World, Story, Karakter, dan Profil Anda <strong>otomatis tersimpan (Auto-Save)</strong> ke Cloud setiap kali Anda mengedit.
+                    Seluruh perubahan World, Story, Karakter, dan Peta kini menggunakan <strong>Live Real-Time Listener (Firestore onSnapshot)</strong> sehingga otomatis muncul di layar rekan tim Anda dalam hitungan detik tanpa perlu refresh.
                   </p>
 
                   <button

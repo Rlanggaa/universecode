@@ -11,6 +11,15 @@ export interface CloudUserProfile {
   avatarUrl: string;
 }
 
+export type TeamRolePermission = 'owner' | 'editor' | 'viewer';
+
+export interface CloudTeamMember {
+  email: string;
+  displayName: string;
+  role: TeamRolePermission;
+  addedAtIso: string;
+}
+
 export interface CloudAccountSession {
   uid: string; // passwordToken (derived from email + password)
   emailLookupId?: string; // deterministic ID derived solely from email
@@ -20,6 +29,10 @@ export interface CloudAccountSession {
   bio?: string;
   avatarUrl?: string;
   authMethod: 'supabase-account' | 'google';
+  // Optional: Join another owner's World Vault using separate personal account
+  joinedWorldVaultId?: string;
+  joinedWorldPin?: string;
+  joinedWorldOwnerName?: string;
 }
 
 export interface SupabaseConnectionConfig {
@@ -115,6 +128,10 @@ export interface CloudWorkspaceBundle {
   timelineStudioRaw: string | null;
   relationshipStudioRaw: string | null;
   userProfile?: CloudUserProfile;
+  teamMembers?: CloudTeamMember[];
+  lastEditorSessionId?: string;
+  lastEditorName?: string;
+  lastEditorEmail?: string;
   updatedAtIso: string;
 }
 
