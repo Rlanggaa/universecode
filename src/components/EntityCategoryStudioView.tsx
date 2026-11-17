@@ -220,6 +220,21 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     }, 0);
   }, [mode]);
 
+  const sanitizeImageSrc = (raw: unknown): string => {
+    if (typeof raw !== 'string') return '';
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === 'None' || trimmed === 'Attached') return '';
+    if (trimmed.startsWith('data:image/')) {
+      const commaIdx = trimmed.indexOf(',');
+      if (commaIdx === -1 || trimmed.length - commaIdx < 32) return '';
+      return trimmed;
+    }
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('/')) {
+      return trimmed;
+    }
+    return '';
+  };
+
   useEffect(() => {
     const targetId =
       mode === 'worlds'
@@ -238,8 +253,8 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     setTitle(found.title);
     setArticleDesc(found.content || '');
     setSecretDesc(found.secretNotes || '');
-    setThumbnail(String(found.templateValues?.ThumbnailUrl || ''));
-    setCustomIcon(String(found.templateValues?.CustomIconUrl || ''));
+    setThumbnail(sanitizeImageSrc(found.templateValues?.ThumbnailUrl));
+    setCustomIcon(sanitizeImageSrc(found.templateValues?.CustomIconUrl));
     window.setTimeout(() => {
       isHydratingRef.current = false;
     }, 0);
@@ -266,7 +281,7 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     }, 0);
   };
 
-  // Standardize Entity Thumbnail to 1920x1080 px Landscape Template (16:9)
+  // Standardize & compress Entity Thumbnail to 16:9 HD (1280x720 JPEG @ 0.78) for fast Cloud sync
   const handleThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -276,24 +291,26 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
         const rawDataUrl = reader.result;
         const img = new Image();
         img.onload = () => {
+          const targetW = 1280;
+          const targetH = 720;
           const canvas = document.createElement('canvas');
-          canvas.width = 1920;
-          canvas.height = 1080;
+          canvas.width = targetW;
+          canvas.height = targetH;
           const ctx = canvas.getContext('2d');
           if (!ctx) {
             setThumbnail(rawDataUrl);
             return;
           }
-          ctx.clearRect(0, 0, 1920, 1080);
-          const scale = Math.max(1920 / img.width, 1080 / img.height);
+          ctx.clearRect(0, 0, targetW, targetH);
+          const scale = Math.max(targetW / img.width, targetH / img.height);
           const drawW = img.width * scale;
           const drawH = img.height * scale;
-          const drawX = (1920 - drawW) / 2;
-          const drawY = (1080 - drawH) / 2;
+          const drawX = (targetW - drawW) / 2;
+          const drawY = (targetH - drawH) / 2;
           ctx.drawImage(img, drawX, drawY, drawW, drawH);
-          setThumbnail(canvas.toDataURL('image/jpeg', 0.92));
+          setThumbnail(canvas.toDataURL('image/jpeg', 0.78));
         };
-        img.onerror = () => setThumbnail(rawDataUrl);
+        img.onerror = () => setThumbnail('');
         img.src = rawDataUrl;
       }
     };
@@ -306,7 +323,27 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') setCustomIcon(reader.result);
+      if (typeof reader.result === 'string') {
+        const rawDataUrl = reader.result;
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 128;
+          canvas.height = 128;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            setCustomIcon(rawDataUrl);
+            return;
+          }
+          const scale = Math.max(128 / img.width, 128 / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          ctx.drawImage(img, (128 - w) / 2, (128 - h) / 2, w, h);
+          setCustomIcon(canvas.toDataURL('image/jpeg', 0.82));
+        };
+        img.onerror = () => setCustomIcon('');
+        img.src = rawDataUrl;
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -733,6 +770,9 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
                     src={thumbnail}
                     alt={title || `${cfg.newButtonLabel} (1920x1080)`}
                     className="w-full h-full object-cover"
+                    onError={() => {
+                      setThumbnail('');
+                    }}
                   />
                   {!isFullscreen && (
                     <div className="absolute inset-0 bg-[#181b26]/55 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
@@ -767,6 +807,9 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
                   src={customIcon || '/assets/icons/timeline.png'}
                   alt={title || cfg.listTitle}
                   className="w-24 h-24 object-contain opacity-90"
+                  onError={(ev) => {
+                    ev.currentTarget.src = '/assets/icons/timeline.png';
+                  }}
                 />
               )}
             </div>

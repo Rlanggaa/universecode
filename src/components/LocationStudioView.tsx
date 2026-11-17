@@ -156,6 +156,21 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
 
   const [savedBanner, setSavedBanner] = useState<string>('');
 
+  const sanitizeImageSrc = (raw: unknown): string => {
+    if (typeof raw !== 'string') return '';
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === 'None' || trimmed === 'Attached') return '';
+    if (trimmed.startsWith('data:image/')) {
+      const commaIdx = trimmed.indexOf(',');
+      if (commaIdx === -1 || trimmed.length - commaIdx < 32) return '';
+      return trimmed;
+    }
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('/')) {
+      return trimmed;
+    }
+    return '';
+  };
+
   useEffect(() => {
     if (!selectedLocationId) return;
     const syncKey = `${selectedLocationId}:${historyRevision}`;
@@ -168,9 +183,9 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     setLocName(found.title);
     setArticleDesc(found.content || '');
     setSecretDesc(found.secretNotes || '');
-    setThumbnail(String(found.templateValues?.ThumbnailUrl || ''));
-    setBackgroundUrl(String(found.templateValues?.BackgroundUrl || ''));
-    setCustomIcon(String(found.templateValues?.CustomIconUrl || ''));
+    setThumbnail(sanitizeImageSrc(found.templateValues?.ThumbnailUrl));
+    setBackgroundUrl(sanitizeImageSrc(found.templateValues?.BackgroundUrl));
+    setCustomIcon(sanitizeImageSrc(found.templateValues?.CustomIconUrl));
     setCosmicClassification(String(found.templateValues?.KlasifikasiKosmis || ''));
     setRegionStatus(String(found.templateValues?.StatusWilayah || ''));
     setFloraFauna(String(found.templateValues?.FloraFaunaKhas || ''));
@@ -218,7 +233,7 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     }, 0);
   };
 
-  // Standardize Location Thumbnail to 1080x1920 px Portrait Template (preserving PNG transparency)
+  // Standardize & compress Location Thumbnail to 9:16 Portrait (720x1280 WebP @ 0.80, preserving transparency)
   const handleThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -228,24 +243,31 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
         const rawDataUrl = reader.result;
         const img = new Image();
         img.onload = () => {
+          const targetW = 720;
+          const targetH = 1280;
           const canvas = document.createElement('canvas');
-          canvas.width = 1080;
-          canvas.height = 1920;
+          canvas.width = targetW;
+          canvas.height = targetH;
           const ctx = canvas.getContext('2d');
           if (!ctx) {
             setThumbnail(rawDataUrl);
             return;
           }
-          ctx.clearRect(0, 0, 1080, 1920);
-          const scale = Math.min(1080 / img.width, 1920 / img.height);
+          ctx.clearRect(0, 0, targetW, targetH);
+          const scale = Math.min(targetW / img.width, targetH / img.height);
           const drawW = img.width * scale;
           const drawH = img.height * scale;
-          const drawX = (1080 - drawW) / 2;
-          const drawY = (1920 - drawH) / 2;
+          const drawX = (targetW - drawW) / 2;
+          const drawY = (targetH - drawH) / 2;
           ctx.drawImage(img, drawX, drawY, drawW, drawH);
-          setThumbnail(canvas.toDataURL('image/png'));
+          const webpUrl = canvas.toDataURL('image/webp', 0.8);
+          setThumbnail(
+            webpUrl.startsWith('data:image/webp')
+              ? webpUrl
+              : canvas.toDataURL('image/jpeg', 0.8)
+          );
         };
-        img.onerror = () => setThumbnail(rawDataUrl);
+        img.onerror = () => setThumbnail('');
         img.src = rawDataUrl;
       }
     };
@@ -258,7 +280,29 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') setBackgroundUrl(reader.result);
+      if (typeof reader.result === 'string') {
+        const rawDataUrl = reader.result;
+        const img = new Image();
+        img.onload = () => {
+          const targetW = 1280;
+          const targetH = 720;
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            setBackgroundUrl(rawDataUrl);
+            return;
+          }
+          const scale = Math.max(targetW / img.width, targetH / img.height);
+          const drawW = img.width * scale;
+          const drawH = img.height * scale;
+          ctx.drawImage(img, (targetW - drawW) / 2, (targetH - drawH) / 2, drawW, drawH);
+          setBackgroundUrl(canvas.toDataURL('image/jpeg', 0.76));
+        };
+        img.onerror = () => setBackgroundUrl('');
+        img.src = rawDataUrl;
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -269,7 +313,27 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      if (typeof reader.result === 'string') setCustomIcon(reader.result);
+      if (typeof reader.result === 'string') {
+        const rawDataUrl = reader.result;
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 128;
+          canvas.height = 128;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            setCustomIcon(rawDataUrl);
+            return;
+          }
+          const scale = Math.max(128 / img.width, 128 / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          ctx.drawImage(img, (128 - w) / 2, (128 - h) / 2, w, h);
+          setCustomIcon(canvas.toDataURL('image/jpeg', 0.82));
+        };
+        img.onerror = () => setCustomIcon('');
+        img.src = rawDataUrl;
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -840,6 +904,9 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
                     src={thumbnail}
                     alt={locName || 'Location Thumbnail (1080x1920)'}
                     className="w-full h-full object-contain drop-shadow-[0_12px_28px_rgba(73,74,82,0.35)] transition-transform duration-500 scale-100"
+                    onError={() => {
+                      setThumbnail('');
+                    }}
                   />
                   {!isFullscreen && (
                     <div className="absolute inset-0 bg-[#181b26]/45 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-30 rounded-[26px]">

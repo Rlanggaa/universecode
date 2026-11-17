@@ -901,14 +901,54 @@ export default function App() {
     }
     if (Array.isArray(bundle.worlds)) {
       const singleWorlds = (bundle.worlds as World[]).slice(0, 1);
-      setWorlds(singleWorlds);
-      setActiveWorldId(singleWorlds[0]?.id || '');
+      const matchingWorldArt = Array.isArray(bundle.articles)
+        ? (bundle.articles as Article[]).find(
+            (a) =>
+              a.id === singleWorlds[0]?.id ||
+              a.category === 'Worlds' ||
+              a.templateType === 'World / Setting'
+          )
+        : undefined;
+      const artThumb = String(matchingWorldArt?.templateValues?.ThumbnailUrl || '');
+      const hydratedWorlds = singleWorlds.map((w) => ({
+        ...w,
+        customCss:
+          w.customCss && w.customCss.startsWith('data:image/')
+            ? w.customCss
+            : artThumb.startsWith('data:image/')
+            ? artThumb
+            : ''
+      }));
+      setWorlds(hydratedWorlds);
+      setActiveWorldId(hydratedWorlds[0]?.id || '');
     } else if (typeof bundle.activeWorldId === 'string') {
       setActiveWorldId(bundle.activeWorldId);
     }
     if (Array.isArray(bundle.universes)) setUniverses(bundle.universes as Universe[]);
     if (Array.isArray(bundle.articles)) {
-      const loadedArticles = bundle.articles as Article[];
+      const primaryW = Array.isArray(bundle.worlds) ? (bundle.worlds as World[])[0] : undefined;
+      const worldCssThumb =
+        primaryW?.customCss && primaryW.customCss.startsWith('data:image/')
+          ? primaryW.customCss
+          : '';
+      const loadedArticles = (bundle.articles as Article[]).map((a) => {
+        if (
+          worldCssThumb &&
+          (a.id === primaryW?.id ||
+            a.category === 'Worlds' ||
+            a.templateType === 'World / Setting') &&
+          !String(a.templateValues?.ThumbnailUrl || '').startsWith('data:image/')
+        ) {
+          return {
+            ...a,
+            templateValues: {
+              ...a.templateValues,
+              ThumbnailUrl: worldCssThumb
+            }
+          };
+        }
+        return a;
+      });
       setArticles(loadedArticles);
       hydrateCanonicalSingleStory(loadedArticles);
     }
@@ -923,9 +963,19 @@ export default function App() {
     if (Array.isArray(bundle.digitalAssets))
       setDigitalAssets(bundle.digitalAssets as DigitalAsset[]);
     if (Array.isArray(bundle.recentlyOpened))
-      setRecentlyOpened(bundle.recentlyOpened as RecentActivityItem[]);
+      setRecentlyOpened(
+        (bundle.recentlyOpened as RecentActivityItem[]).map((item) => ({
+          ...item,
+          thumbnailUrl: undefined
+        }))
+      );
     if (Array.isArray(bundle.recentlyEdited))
-      setRecentlyEdited(bundle.recentlyEdited as RecentActivityItem[]);
+      setRecentlyEdited(
+        (bundle.recentlyEdited as RecentActivityItem[]).map((item) => ({
+          ...item,
+          thumbnailUrl: undefined
+        }))
+      );
 
     if (Array.isArray(bundle.teamMembers)) {
       setTeamMembers(bundle.teamMembers as CloudTeamMember[]);
@@ -1059,8 +1109,27 @@ export default function App() {
         (acct?.joinedWorldVaultId && acct.joinedWorldVaultId !== acct?.emailLookupId)
     );
 
+    // Deduplicate World banner Base64 so it is stored only on the canonical World article,
+    // and strip heavy Base64 thumbnailUrl copies from recentlyOpened & recentlyEdited.
+    const compactWorlds = worlds.slice(0, 1).map((w) => {
+      const hasWorldArticleThumb = mergedArticles.some(
+        (a) =>
+          (a.id === w.id || a.category === 'Worlds' || a.templateType === 'World / Setting') &&
+          String(a.templateValues?.ThumbnailUrl || '').startsWith('data:image/')
+      );
+      return hasWorldArticleThumb ? { ...w, customCss: '' } : w;
+    });
+    const compactRecentlyOpened = recentlyOpened.map((item) => ({
+      ...item,
+      thumbnailUrl: undefined
+    }));
+    const compactRecentlyEdited = recentlyEdited.map((item) => ({
+      ...item,
+      thumbnailUrl: undefined
+    }));
+
     const stateBundle: CloudWorkspaceBundle = {
-      worlds: worlds.slice(0, 1),
+      worlds: compactWorlds,
       activeWorldId: worlds[0]?.id || activeWorldId,
       universes,
       articles: mergedArticles,
@@ -1071,8 +1140,8 @@ export default function App() {
       notes,
       tasks,
       digitalAssets,
-      recentlyOpened,
-      recentlyEdited,
+      recentlyOpened: compactRecentlyOpened,
+      recentlyEdited: compactRecentlyEdited,
       timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
       relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
       userProfile: isEditingSharedVault
@@ -2635,13 +2704,13 @@ export default function App() {
     [articles]
   );
 
-  // Helper to record Recently Opened & Recently Edited items
+  // Helper to record Recently Opened & Recently Edited items (without duplicating heavy Base64 strings)
   const recordOpenedItem = (
     entityId: string,
     title: string,
     type: RecentActivityItem['type'],
     moduleTarget: string,
-    thumbnailUrl?: string
+    _thumbnailUrl?: string
   ) => {
     const item: RecentActivityItem = {
       id: `open-${Date.now()}`,
@@ -2649,7 +2718,6 @@ export default function App() {
       title,
       type,
       moduleTarget,
-      thumbnailUrl,
       timestampLabel: 'last opened just now',
       timestampMs: Date.now()
     };
@@ -2664,7 +2732,7 @@ export default function App() {
     title: string,
     type: RecentActivityItem['type'],
     moduleTarget: string,
-    thumbnailUrl?: string
+    _thumbnailUrl?: string
   ) => {
     const item: RecentActivityItem = {
       id: `edit-${Date.now()}`,
@@ -2672,7 +2740,6 @@ export default function App() {
       title,
       type,
       moduleTarget,
-      thumbnailUrl,
       timestampLabel: 'last edited just now',
       timestampMs: Date.now()
     };
@@ -2682,7 +2749,7 @@ export default function App() {
     ]);
   };
 
-  // Thumbnail Upload Handler for Page 6 World Creation Form
+  // Thumbnail Upload Handler for Page 6 World Creation Form (compressed to 1280x720 JPEG @ 0.78)
   const handleWorldThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isReadOnlyViewer) {
       notifyViewerReadOnly();
@@ -2693,10 +2760,31 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
-        setFormWorldImage(reader.result);
+        const rawDataUrl = reader.result;
+        const img = new Image();
+        img.onload = () => {
+          const targetW = 1280;
+          const targetH = 720;
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            setFormWorldImage(rawDataUrl);
+            return;
+          }
+          const scale = Math.max(targetW / img.width, targetH / img.height);
+          const drawW = img.width * scale;
+          const drawH = img.height * scale;
+          ctx.drawImage(img, (targetW - drawW) / 2, (targetH - drawH) / 2, drawW, drawH);
+          setFormWorldImage(canvas.toDataURL('image/jpeg', 0.78));
+        };
+        img.onerror = () => setFormWorldImage('');
+        img.src = rawDataUrl;
       }
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   // Save Story Entry Handler (Single Story with Unlimited Pages)
@@ -4394,43 +4482,56 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {recentlyOpened.slice(0, 5).map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            onClick={() => {
-                              if (item.type === 'World') {
-                                setActiveWorldId(item.entityId);
-                                setActiveNav('worlds');
-                              } else {
-                                setSelectedArticleId(item.entityId);
-                                setOpenInFullscreen(true);
-                                setActiveNav(item.moduleTarget as PrimaryNavId);
-                              }
-                            }}
-                            className="w-full text-left flex items-center gap-3.5 p-3 rounded-[20px] bg-[#f5f7fc] hover:bg-[#e8eef9] border border-[#dce3f2] hover:border-[#879fd0] transition-all group"
-                          >
-                            <div className="w-11 h-11 rounded-2xl bg-[#879fd0] border border-[#7792c4] flex items-center justify-center shrink-0 overflow-hidden">
-                              {item.thumbnailUrl && item.thumbnailUrl.startsWith('data:image') ? (
-                                <img
-                                  src={item.thumbnailUrl}
-                                  alt={item.title}
-                                  className="w-full h-full object-cover"
-                                />
-                              ) : (
-                                <BookOpen className="w-4 h-4 text-white" />
-                              )}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="text-sm font-bold text-[#181b26] group-hover:text-[#6d7696] truncate">
-                                {item.title}
+                        {recentlyOpened.slice(0, 5).map((item) => {
+                          const matchedArt = articles.find((a) => a.id === item.entityId);
+                          const matchedWorld = worlds.find((w) => w.id === item.entityId);
+                          const resolvedThumb = String(
+                            matchedArt?.templateValues?.ThumbnailUrl ||
+                              matchedWorld?.customCss ||
+                              item.thumbnailUrl ||
+                              ''
+                          );
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => {
+                                if (item.type === 'World') {
+                                  setActiveWorldId(item.entityId);
+                                  setActiveNav('worlds');
+                                } else {
+                                  setSelectedArticleId(item.entityId);
+                                  setOpenInFullscreen(true);
+                                  setActiveNav(item.moduleTarget as PrimaryNavId);
+                                }
+                              }}
+                              className="w-full text-left flex items-center gap-3.5 p-3 rounded-[20px] bg-[#f5f7fc] hover:bg-[#e8eef9] border border-[#dce3f2] hover:border-[#879fd0] transition-all group"
+                            >
+                              <div className="w-11 h-11 rounded-2xl bg-[#879fd0] border border-[#7792c4] flex items-center justify-center shrink-0 overflow-hidden">
+                                {resolvedThumb && resolvedThumb.startsWith('data:image/') ? (
+                                  <img
+                                    src={resolvedThumb}
+                                    alt={item.title}
+                                    className="w-full h-full object-cover"
+                                    onError={(ev) => {
+                                      ev.currentTarget.style.display = 'none';
+                                    }}
+                                  />
+                                ) : (
+                                  <BookOpen className="w-4 h-4 text-white" />
+                                )}
                               </div>
-                              <div className="text-[11px] text-[#52586e] truncate mt-0.5">
-                                {item.type} · {item.timestampLabel}
+                              <div className="min-w-0">
+                                <div className="text-sm font-bold text-[#181b26] group-hover:text-[#6d7696] truncate">
+                                  {item.title}
+                                </div>
+                                <div className="text-[11px] text-[#52586e] truncate mt-0.5">
+                                  {item.type} · {item.timestampLabel}
+                                </div>
                               </div>
-                            </div>
-                          </button>
-                        ))}
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

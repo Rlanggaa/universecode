@@ -191,6 +191,21 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
   const [activeTooltip, setActiveTooltip] = useState<TooltipFieldId>(null);
   const [savedBanner, setSavedBanner] = useState<string>('');
 
+  const sanitizeImageSrc = (raw: unknown): string => {
+    if (typeof raw !== 'string') return '';
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === 'None' || trimmed === 'Attached') return '';
+    if (trimmed.startsWith('data:image/')) {
+      const commaIdx = trimmed.indexOf(',');
+      if (commaIdx === -1 || trimmed.length - commaIdx < 32) return '';
+      return trimmed;
+    }
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('/')) {
+      return trimmed;
+    }
+    return '';
+  };
+
   // Load selected character when clicked from Character List or restored via Undo/Redo
   useEffect(() => {
     if (!selectedCharacterId) return;
@@ -204,8 +219,8 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     setCharName(found.title);
     setArticleDesc(found.content || '');
     setSecretDesc(found.secretNotes || '');
-    setThumbnail(String(found.templateValues?.ThumbnailUrl || ''));
-    setBackgroundUrl(String(found.templateValues?.BackgroundUrl || ''));
+    setThumbnail(sanitizeImageSrc(found.templateValues?.ThumbnailUrl));
+    setBackgroundUrl(sanitizeImageSrc(found.templateValues?.BackgroundUrl));
     setCurrentLocation(
       String(found.templateValues?.['Tempat Tinggal'] || found.templateValues?.LokasiSaatIni || '')
     );
@@ -268,7 +283,7 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     }, 0);
   };
 
-  // Standardize Character Thumbnail to 1080x1920 px Portrait Template (preserving PNG transparency)
+  // Standardize & compress Character Thumbnail to 9:16 Portrait (720x1280 WebP @ 0.80, preserving transparency)
   const handleThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -278,24 +293,31 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
         const rawDataUrl = reader.result;
         const img = new Image();
         img.onload = () => {
+          const targetW = 720;
+          const targetH = 1280;
           const canvas = document.createElement('canvas');
-          canvas.width = 1080;
-          canvas.height = 1920;
+          canvas.width = targetW;
+          canvas.height = targetH;
           const ctx = canvas.getContext('2d');
           if (!ctx) {
             setThumbnail(rawDataUrl);
             return;
           }
-          ctx.clearRect(0, 0, 1080, 1920);
-          const scale = Math.min(1080 / img.width, 1920 / img.height);
+          ctx.clearRect(0, 0, targetW, targetH);
+          const scale = Math.min(targetW / img.width, targetH / img.height);
           const drawW = img.width * scale;
           const drawH = img.height * scale;
-          const drawX = (1080 - drawW) / 2;
-          const drawY = (1920 - drawH) / 2;
+          const drawX = (targetW - drawW) / 2;
+          const drawY = (targetH - drawH) / 2;
           ctx.drawImage(img, drawX, drawY, drawW, drawH);
-          setThumbnail(canvas.toDataURL('image/png'));
+          const webpUrl = canvas.toDataURL('image/webp', 0.8);
+          setThumbnail(
+            webpUrl.startsWith('data:image/webp')
+              ? webpUrl
+              : canvas.toDataURL('image/jpeg', 0.8)
+          );
         };
-        img.onerror = () => setThumbnail(rawDataUrl);
+        img.onerror = () => setThumbnail('');
         img.src = rawDataUrl;
       }
     };
@@ -309,7 +331,27 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
-        setBackgroundUrl(reader.result);
+        const rawDataUrl = reader.result;
+        const img = new Image();
+        img.onload = () => {
+          const targetW = 1280;
+          const targetH = 720;
+          const canvas = document.createElement('canvas');
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            setBackgroundUrl(rawDataUrl);
+            return;
+          }
+          const scale = Math.max(targetW / img.width, targetH / img.height);
+          const drawW = img.width * scale;
+          const drawH = img.height * scale;
+          ctx.drawImage(img, (targetW - drawW) / 2, (targetH - drawH) / 2, drawW, drawH);
+          setBackgroundUrl(canvas.toDataURL('image/jpeg', 0.76));
+        };
+        img.onerror = () => setBackgroundUrl('');
+        img.src = rawDataUrl;
       }
     };
     reader.readAsDataURL(file);
@@ -907,6 +949,9 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
                     className={`w-full h-full object-contain drop-shadow-[0_12px_28px_rgba(73,74,82,0.35)] transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] origin-top ${
                       isFullscreen ? 'scale-[1.35]' : 'scale-100'
                     }`}
+                    onError={() => {
+                      setThumbnail('');
+                    }}
                   />
                   {!isFullscreen && (
                     <div className="absolute inset-0 bg-[#181b26]/45 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-30 rounded-[26px]">

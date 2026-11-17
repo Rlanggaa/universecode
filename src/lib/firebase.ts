@@ -424,7 +424,7 @@ export function subscribeUserArticles(
   );
 }
 
-const CHUNK_SIZE_CHARS = 700000;
+const CHUNK_SIZE_CHARS = 450000;
 const MAX_CHUNKS = 25;
 
 export function normalizeVaultPasswordToken(rawToken: string): string {
@@ -457,7 +457,10 @@ export async function saveCloudAccountVaultToFirestore(
     const accountRef = doc(db, 'cloud_accounts', safeAccountId);
     let existingSnap;
     try {
-      existingSnap = await getDocFromServer(accountRef);
+      existingSnap = await getDoc(accountRef);
+      if (!existingSnap.exists()) {
+        existingSnap = await getDocFromServer(accountRef);
+      }
     } catch {
       existingSnap = await getDoc(accountRef);
     }
@@ -474,55 +477,59 @@ export async function saveCloudAccountVaultToFirestore(
       ) {
         effectivePasswordToken = existingData.passwordToken;
       }
-    }
-
-    // Write overflow chunks (1..chunkCount-1) FIRST so real-time onSnapshot listeners on accountRef
-    // always read up-to-date overflow chunks when accountRef triggers!
-    for (let idx = 1; idx < chunkCount; idx++) {
-      const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
-      const chunkRef = doc(db, 'cloud_backups', chunkDocId);
-      let existingChunk;
-      try {
-        existingChunk = await getDocFromServer(chunkRef);
-      } catch {
-        existingChunk = await getDoc(chunkRef);
-      }
-
-      if (
-        existingChunk.exists() &&
-        existingChunk.data()?.passwordToken === effectivePasswordToken
-      ) {
-        await updateDoc(chunkRef, {
-          payloadChunk: chunks[idx],
-          updatedAt: serverTimestamp()
-        });
-      } else {
-        await setDoc(chunkRef, {
-          accountId: safeAccountId,
-          passwordToken: effectivePasswordToken,
-          chunkIndex: idx,
-          payloadChunk: chunks[idx],
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-      }
-    }
-
-    if (existingSnap.exists()) {
-      await updateDoc(accountRef, {
-        displayName: safeDisplayName,
-        chunkCount,
-        payloadChunk0: chunk0,
-        updatedAt: serverTimestamp()
-      });
     } else {
+      // CRITICAL: firestore.rules for /cloud_backups requires /cloud_accounts/{accountId} to exist FIRST!
       await setDoc(accountRef, {
         accountId: safeAccountId,
         passwordToken: effectivePasswordToken,
         displayName: safeDisplayName,
-        chunkCount,
+        chunkCount: 1,
         payloadChunk0: chunk0,
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    // Write overflow chunks (1..chunkCount-1) in PARALLEL via Promise.all for fast Cloud sync
+    if (chunkCount > 1) {
+      const chunkPromises: Promise<void>[] = [];
+      for (let idx = 1; idx < chunkCount; idx++) {
+        const chunkPayload = chunks[idx];
+        chunkPromises.push(
+          (async () => {
+            const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+            const chunkRef = doc(db, 'cloud_backups', chunkDocId);
+            const existingChunk = await getDoc(chunkRef);
+            if (
+              existingChunk.exists() &&
+              existingChunk.data()?.passwordToken === effectivePasswordToken
+            ) {
+              await updateDoc(chunkRef, {
+                payloadChunk: chunkPayload,
+                updatedAt: serverTimestamp()
+              });
+            } else {
+              await setDoc(chunkRef, {
+                accountId: safeAccountId,
+                passwordToken: effectivePasswordToken,
+                chunkIndex: idx,
+                payloadChunk: chunkPayload,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp()
+              });
+            }
+          })()
+        );
+      }
+      await Promise.all(chunkPromises);
+    }
+
+    // Update main cloud_accounts document last so real-time onSnapshot listeners read all completed chunks
+    if (existingSnap.exists() || chunkCount > 1) {
+      await updateDoc(accountRef, {
+        displayName: safeDisplayName,
+        chunkCount,
+        payloadChunk0: chunk0,
         updatedAt: serverTimestamp()
       });
     }
@@ -583,21 +590,33 @@ export async function loadCloudAccountVaultFromFirestore(
     const chunkCount = typeof data.chunkCount === 'number' ? data.chunkCount : 1;
     let fullJson = typeof data.payloadChunk0 === 'string' ? data.payloadChunk0 : '';
 
-    for (let idx = 1; idx < chunkCount; idx++) {
-      const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
-      const chunkRef = doc(db, 'cloud_backups', chunkDocId);
-      let chunkSnap;
-      try {
-        chunkSnap = await getDocFromServer(chunkRef);
-      } catch {
-        chunkSnap = await getDoc(chunkRef);
-      }
-      if (chunkSnap.exists()) {
-        const cData = chunkSnap.data();
-        if (typeof cData.payloadChunk === 'string') {
-          fullJson += cData.payloadChunk;
-        }
-      }
+    if (chunkCount > 1) {
+      const indices = Array.from({ length: chunkCount - 1 }, (_, i) => i + 1);
+      const extraChunks = await Promise.all(
+        indices.map(async (idx) => {
+          const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+          const chunkRef = doc(db, 'cloud_backups', chunkDocId);
+          try {
+            const chunkSnap = await getDocFromServer(chunkRef);
+            if (chunkSnap.exists()) {
+              const cData = chunkSnap.data();
+              return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
+            }
+          } catch {
+            try {
+              const fallbackSnap = await getDoc(chunkRef);
+              if (fallbackSnap.exists()) {
+                const cData = fallbackSnap.data();
+                return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
+              }
+            } catch {
+              // ignore
+            }
+          }
+          return '';
+        })
+      );
+      fullJson += extraChunks.join('');
     }
 
     if (fullJson && fullJson.startsWith('{')) {
@@ -649,20 +668,33 @@ export function subscribeCloudAccountVault(
       const chunkCount = typeof data.chunkCount === 'number' ? data.chunkCount : 1;
       let fullJson = typeof data.payloadChunk0 === 'string' ? data.payloadChunk0 : '';
 
-      for (let idx = 1; idx < chunkCount; idx++) {
-        const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
-        const chunkRef = doc(db, 'cloud_backups', chunkDocId);
-        try {
-          const chunkSnap = await getDocFromServer(chunkRef);
-          if (chunkSnap.exists()) {
-            const cData = chunkSnap.data();
-            if (typeof cData.payloadChunk === 'string') {
-              fullJson += cData.payloadChunk;
+      if (chunkCount > 1) {
+        const indices = Array.from({ length: chunkCount - 1 }, (_, i) => i + 1);
+        const extraChunks = await Promise.all(
+          indices.map(async (idx) => {
+            const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+            const chunkRef = doc(db, 'cloud_backups', chunkDocId);
+            try {
+              const chunkSnap = await getDocFromServer(chunkRef);
+              if (chunkSnap.exists()) {
+                const cData = chunkSnap.data();
+                return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
+              }
+            } catch {
+              try {
+                const fallbackSnap = await getDoc(chunkRef);
+                if (fallbackSnap.exists()) {
+                  const cData = fallbackSnap.data();
+                  return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
+                }
+              } catch {
+                // ignore
+              }
             }
-          }
-        } catch {
-          // ignore transient chunk read error
-        }
+            return '';
+          })
+        );
+        fullJson += extraChunks.join('');
       }
 
       if (fullJson && fullJson.startsWith('{')) {
