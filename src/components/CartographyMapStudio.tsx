@@ -307,6 +307,7 @@ interface CartographyMapStudioProps {
   onNavigateToLocation: (locationArticleId: string) => void;
   onCreateLocationStub: (locationTitle: string) => Article;
   onStartZoomTransition?: () => void;
+  historyRevision?: number;
 }
 
 export const CartographyMapStudio: React.FC<CartographyMapStudioProps> = ({
@@ -318,7 +319,8 @@ export const CartographyMapStudio: React.FC<CartographyMapStudioProps> = ({
   onDeleteMap,
   onNavigateToLocation,
   onCreateLocationStub,
-  onStartZoomTransition
+  onStartZoomTransition,
+  historyRevision = 0
 }) => {
   const worldMaps = useMemo(
     () => maps.filter((m) => m.worldId === activeWorld.id),
@@ -589,6 +591,7 @@ export const CartographyMapStudio: React.FC<CartographyMapStudioProps> = ({
       };
       try {
         localStorage.setItem(`${STORAGE_KEY_PREFIX}${mapId}`, JSON.stringify(payload));
+        window.dispatchEvent(new CustomEvent('alt-universe-substudio-change'));
       } catch {
         // Ignore storage quota warnings
       }
@@ -970,7 +973,7 @@ export const CartographyMapStudio: React.FC<CartographyMapStudioProps> = ({
         drawReferenceContinentDirectly(activeMap.id);
       });
     }
-  }, [activeMap?.id]);
+  }, [activeMap?.id, historyRevision]);
 
   // Paint helper on HTML5 canvas supporting multi-color Land Brush & River/Lake/Sea Water Brush
   const paintStrokeOnCanvas = (

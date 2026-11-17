@@ -414,7 +414,7 @@ export function subscribeUserArticles(
   );
 }
 
-const CHUNK_SIZE_CHARS = 700000;
+const CHUNK_SIZE_CHARS = 650000;
 const MAX_CHUNKS = 25;
 
 export function normalizeVaultPasswordToken(rawToken: string): string {
@@ -422,56 +422,51 @@ export function normalizeVaultPasswordToken(rawToken: string): string {
   return cleaned.length >= 8 ? cleaned : cleaned.padEnd(8, '0');
 }
 
-function buildCompactSingleChunkJson(bundle: CloudWorkspaceBundle, maxChars: number): string {
-  const compactArticles = Array.isArray(bundle.articles)
-    ? bundle.articles.map((art) => {
-        if (!art || typeof art !== 'object') return art;
-        const a = art as Record<string, unknown>;
-        const tv =
-          a.templateValues && typeof a.templateValues === 'object'
-            ? { ...(a.templateValues as Record<string, unknown>) }
-            : {};
-        if (typeof tv.ThumbnailUrl === 'string' && tv.ThumbnailUrl.length > 120000) {
-          tv.ThumbnailUrl = '';
+async function readOverflowChunkPayload(safeAccountId: string, idx: number): Promise<string> {
+  const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+  const accountChunkRef = doc(db, 'cloud_accounts', chunkDocId);
+  try {
+    const snap = await getDocFromServer(accountChunkRef);
+    if (snap.exists()) {
+      const d = snap.data();
+      if (typeof d.payloadChunk0 === 'string' && d.payloadChunk0.length > 0) {
+        return d.payloadChunk0;
+      }
+    }
+  } catch {
+    try {
+      const fallbackSnap = await getDoc(accountChunkRef);
+      if (fallbackSnap.exists()) {
+        const d = fallbackSnap.data();
+        if (typeof d.payloadChunk0 === 'string' && d.payloadChunk0.length > 0) {
+          return d.payloadChunk0;
         }
-        return {
-          ...a,
-          secretNotes:
-            typeof a.secretNotes === 'string' && a.secretNotes.length > 120000
-              ? ''
-              : a.secretNotes,
-          templateValues: tv
-        };
-      })
-    : [];
-
-  const compactWorlds = Array.isArray(bundle.worlds)
-    ? bundle.worlds.map((w) => {
-        if (!w || typeof w !== 'object') return w;
-        const worldObj = w as Record<string, unknown>;
-        return {
-          ...worldObj,
-          customCss:
-            typeof worldObj.customCss === 'string' && worldObj.customCss.length > 120000
-              ? ''
-              : worldObj.customCss
-        };
-      })
-    : [];
-
-  const compactBundle: CloudWorkspaceBundle = {
-    ...bundle,
-    worlds: compactWorlds,
-    articles: compactArticles,
-    recentlyOpened: [],
-    recentlyEdited: []
-  };
-
-  const compactStr = JSON.stringify(compactBundle);
-  if (compactStr.length <= maxChars) {
-    return compactStr;
+      }
+    } catch {
+      // ignore
+    }
   }
-  return compactStr.slice(0, maxChars);
+
+  // Backward compatibility: also check legacy cloud_backups collection
+  const legacyChunkRef = doc(db, 'cloud_backups', chunkDocId);
+  try {
+    const legacySnap = await getDocFromServer(legacyChunkRef);
+    if (legacySnap.exists()) {
+      const d = legacySnap.data();
+      return typeof d.payloadChunk === 'string' ? d.payloadChunk : '';
+    }
+  } catch {
+    try {
+      const legacyFallback = await getDoc(legacyChunkRef);
+      if (legacyFallback.exists()) {
+        const d = legacyFallback.data();
+        return typeof d.payloadChunk === 'string' ? d.payloadChunk : '';
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return '';
 }
 
 export async function saveCloudAccountVaultToFirestore(
@@ -493,8 +488,8 @@ export async function saveCloudAccountVaultToFirestore(
     if (chunks.length === 0) {
       chunks.push('{}');
     }
-    let chunkCount = Math.min(chunks.length, MAX_CHUNKS);
-    let chunk0 = chunks[0];
+    const chunkCount = Math.min(chunks.length, MAX_CHUNKS);
+    const chunk0 = chunks[0];
 
     const accountRef = doc(db, 'cloud_accounts', safeAccountId);
     let existingSnap;
@@ -504,7 +499,6 @@ export async function saveCloudAccountVaultToFirestore(
       existingSnap = await getDoc(accountRef);
     }
 
-    // Always adopt the vault's existing passwordToken if the document already exists in Firestore.
     let effectivePasswordToken = safePasswordToken;
     if (existingSnap.exists()) {
       const existingData = existingSnap.data();
@@ -526,57 +520,47 @@ export async function saveCloudAccountVaultToFirestore(
       });
     }
 
-    // Write overflow chunks (1..chunkCount-1) in PARALLEL via Promise.all
+    // Write overflow chunks (1..chunkCount-1) in PARALLEL directly into cloud_accounts
     if (chunkCount > 1) {
-      try {
-        const chunkPromises: Promise<void>[] = [];
-        for (let idx = 1; idx < chunkCount; idx++) {
-          const chunkPayload = chunks[idx];
-          chunkPromises.push(
-            (async () => {
-              const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
-              const chunkRef = doc(db, 'cloud_backups', chunkDocId);
-              let existingChunk;
-              try {
-                existingChunk = await getDocFromServer(chunkRef);
-              } catch {
-                existingChunk = await getDoc(chunkRef);
-              }
-              if (existingChunk.exists()) {
-                if (existingChunk.data()?.passwordToken === effectivePasswordToken) {
-                  await updateDoc(chunkRef, {
-                    payloadChunk: chunkPayload,
-                    updatedAt: serverTimestamp()
-                  });
-                } else {
-                  await updateDoc(chunkRef, {
-                    passwordToken: effectivePasswordToken,
-                    payloadChunk: chunkPayload,
-                    updatedAt: serverTimestamp()
-                  });
-                }
-              } else {
-                await setDoc(chunkRef, {
-                  accountId: safeAccountId,
-                  passwordToken: effectivePasswordToken,
-                  chunkIndex: idx,
-                  payloadChunk: chunkPayload,
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp()
-                });
-              }
-            })()
-          );
-        }
-        await Promise.all(chunkPromises);
-      } catch (chunkErr) {
-        console.warn('Overflow chunk write fallback to single-chunk vault:', chunkErr);
-        chunk0 = buildCompactSingleChunkJson(bundle, CHUNK_SIZE_CHARS);
-        chunkCount = 1;
+      const chunkPromises: Promise<void>[] = [];
+      for (let idx = 1; idx < chunkCount; idx++) {
+        const chunkPayload = chunks[idx];
+        chunkPromises.push(
+          (async () => {
+            const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
+            const chunkRef = doc(db, 'cloud_accounts', chunkDocId);
+            let existingChunk;
+            try {
+              existingChunk = await getDocFromServer(chunkRef);
+            } catch {
+              existingChunk = await getDoc(chunkRef);
+            }
+            if (existingChunk.exists()) {
+              await updateDoc(chunkRef, {
+                passwordToken: effectivePasswordToken,
+                displayName: `chunk-${idx}`,
+                chunkCount: 1,
+                payloadChunk0: chunkPayload,
+                updatedAt: serverTimestamp()
+              });
+            } else {
+              await setDoc(chunkRef, {
+                accountId: chunkDocId,
+                passwordToken: effectivePasswordToken,
+                displayName: `chunk-${idx}`,
+                chunkCount: 1,
+                payloadChunk0: chunkPayload,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp()
+              });
+            }
+          })()
+        );
       }
+      await Promise.all(chunkPromises);
     }
 
-    // Update main cloud_accounts document last so real-time onSnapshot listeners immediately receive the update
+    // Update main cloud_accounts document last so real-time onSnapshot listeners read all completed chunks
     if (existingSnap.exists() || chunkCount >= 1) {
       await updateDoc(accountRef, {
         displayName: safeDisplayName,
@@ -645,28 +629,7 @@ export async function loadCloudAccountVaultFromFirestore(
     if (chunkCount > 1) {
       const indices = Array.from({ length: chunkCount - 1 }, (_, i) => i + 1);
       const extraChunks = await Promise.all(
-        indices.map(async (idx) => {
-          const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
-          const chunkRef = doc(db, 'cloud_backups', chunkDocId);
-          try {
-            const chunkSnap = await getDocFromServer(chunkRef);
-            if (chunkSnap.exists()) {
-              const cData = chunkSnap.data();
-              return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
-            }
-          } catch {
-            try {
-              const fallbackSnap = await getDoc(chunkRef);
-              if (fallbackSnap.exists()) {
-                const cData = fallbackSnap.data();
-                return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
-              }
-            } catch {
-              // ignore
-            }
-          }
-          return '';
-        })
+        indices.map((idx) => readOverflowChunkPayload(safeAccountId, idx))
       );
       fullJson += extraChunks.join('');
     }
@@ -713,7 +676,6 @@ export function subscribeCloudAccountVault(
     accountRef,
     async (snap) => {
       if (!snap.exists()) return;
-      // Ignore local pending writes so we only react to committed server updates from collaborators
       if (snap.metadata.hasPendingWrites) return;
 
       const data = snap.data();
@@ -723,28 +685,7 @@ export function subscribeCloudAccountVault(
       if (chunkCount > 1) {
         const indices = Array.from({ length: chunkCount - 1 }, (_, i) => i + 1);
         const extraChunks = await Promise.all(
-          indices.map(async (idx) => {
-            const chunkDocId = sanitizeId(`${safeAccountId}-c${idx}`);
-            const chunkRef = doc(db, 'cloud_backups', chunkDocId);
-            try {
-              const chunkSnap = await getDocFromServer(chunkRef);
-              if (chunkSnap.exists()) {
-                const cData = chunkSnap.data();
-                return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
-              }
-            } catch {
-              try {
-                const fallbackSnap = await getDoc(chunkRef);
-                if (fallbackSnap.exists()) {
-                  const cData = fallbackSnap.data();
-                  return typeof cData.payloadChunk === 'string' ? cData.payloadChunk : '';
-                }
-              } catch {
-                // ignore
-              }
-            }
-            return '';
-          })
+          indices.map((idx) => readOverflowChunkPayload(safeAccountId, idx))
         );
         fullJson += extraChunks.join('');
       }

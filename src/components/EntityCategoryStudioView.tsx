@@ -159,7 +159,10 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
   const thumbInputRef = useRef<HTMLInputElement | null>(null);
   const customIconInputRef = useRef<HTMLInputElement | null>(null);
   const lastLoadedKeyRef = useRef<string>('');
+  const lastSyncedSigRef = useRef<string>('');
   const isHydratingRef = useRef<boolean>(false);
+  const isCreatingNewRef = useRef<boolean>(false);
+  const hydrateTimerRef = useRef<number | null>(null);
 
   // Fullscreen Mode State & 0.5s Residual Zoom Arrival State
   const [isFullscreen, setIsFullscreen] = useState<boolean>(Boolean(initialFullscreen));
@@ -204,10 +207,12 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
   const [secretDesc, setSecretDesc] = useState<string>('');
   const [savedBanner, setSavedBanner] = useState<string>('');
 
-  // Reset form when switching between Organization / Species / Conditions / Cosmics / Manuscripts
+  // Reset form when switching between World / Organization / Species / Conditions / Cosmics / Manuscripts / Event
   useEffect(() => {
     isHydratingRef.current = true;
+    isCreatingNewRef.current = false;
     lastLoadedKeyRef.current = '';
+    lastSyncedSigRef.current = '';
     setEditingId('');
     setTitle('');
     setThumbnail('');
@@ -215,8 +220,10 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     setArticleDesc('');
     setSecretDesc('');
     setSavedBanner('');
-    window.setTimeout(() => {
+    if (hydrateTimerRef.current) window.clearTimeout(hydrateTimerRef.current);
+    hydrateTimerRef.current = window.setTimeout(() => {
       isHydratingRef.current = false;
+      hydrateTimerRef.current = null;
     }, 0);
   }, [mode]);
 
@@ -235,40 +242,68 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     return '';
   };
 
+  const buildEntitySignature = (item: Article): string =>
+    JSON.stringify({
+      id: item.id,
+      title: item.title || '',
+      content: item.content || '',
+      secret: item.secretNotes || '',
+      thumb: sanitizeImageSrc(item.templateValues?.ThumbnailUrl),
+      icon: sanitizeImageSrc(item.templateValues?.CustomIconUrl)
+    });
+
   useEffect(() => {
-    const targetId =
-      mode === 'worlds'
-        ? selectedEntityId || entityList[0]?.id || ''
-        : selectedEntityId;
-    if (!targetId) return;
-    const syncKey = `${mode}:${targetId}:${historyRevision}`;
-    if (lastLoadedKeyRef.current === syncKey) return;
+    const resolvedTargetId =
+      selectedEntityId && entityList.some((item) => item.id === selectedEntityId)
+        ? selectedEntityId
+        : editingId && entityList.some((item) => item.id === editingId)
+        ? editingId
+        : mode === 'worlds' || !isCreatingNewRef.current
+        ? entityList[0]?.id || ''
+        : '';
+
+    if (!resolvedTargetId) return;
     const found =
-      entityList.find((item) => item.id === targetId) ||
+      entityList.find((item) => item.id === resolvedTargetId) ||
       (mode === 'worlds' ? entityList[0] : undefined);
     if (!found) return;
+
+    const remoteSig = buildEntitySignature(found);
+    if (editingId === found.id && lastSyncedSigRef.current === remoteSig) {
+      return;
+    }
+
     isHydratingRef.current = true;
-    lastLoadedKeyRef.current = syncKey;
+    lastLoadedKeyRef.current = `${mode}:${found.id}:${historyRevision}`;
+    lastSyncedSigRef.current = remoteSig;
     setEditingId(found.id);
+    if (selectedEntityId !== found.id) {
+      onSelectEntity(found.id);
+    }
     setTitle(found.title);
     setArticleDesc(found.content || '');
     setSecretDesc(found.secretNotes || '');
     setThumbnail(sanitizeImageSrc(found.templateValues?.ThumbnailUrl));
     setCustomIcon(sanitizeImageSrc(found.templateValues?.CustomIconUrl));
-    window.setTimeout(() => {
+    if (hydrateTimerRef.current) window.clearTimeout(hydrateTimerRef.current);
+    hydrateTimerRef.current = window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 150);
-  }, [selectedEntityId, entityList, mode, historyRevision]);
+      hydrateTimerRef.current = null;
+    }, 180);
+  }, [selectedEntityId, editingId, entityList, mode, historyRevision]);
 
   const handleResetNew = () => {
     if (mode === 'worlds' && entityList.length > 0) {
       const primary = entityList[0];
+      isCreatingNewRef.current = false;
       setEditingId(primary.id);
       onSelectEntity(primary.id);
       return;
     }
+    isCreatingNewRef.current = true;
     isHydratingRef.current = true;
     lastLoadedKeyRef.current = `${mode}::${historyRevision}`;
+    lastSyncedSigRef.current = '';
     setEditingId('');
     onSelectEntity('');
     setTitle('');
@@ -276,8 +311,10 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     setCustomIcon('');
     setArticleDesc('');
     setSecretDesc('');
-    window.setTimeout(() => {
+    if (hydrateTimerRef.current) window.clearTimeout(hydrateTimerRef.current);
+    hydrateTimerRef.current = window.setTimeout(() => {
       isHydratingRef.current = false;
+      hydrateTimerRef.current = null;
     }, 0);
   };
 
@@ -399,14 +436,16 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
       updatedAt: nowStamp
     };
 
-    onSaveEntity(entityArticle);
+    isCreatingNewRef.current = false;
+    lastSyncedSigRef.current = buildEntitySignature(entityArticle);
     lastLoadedKeyRef.current = `${mode}:${idToUse}:${historyRevision}`;
+    onSaveEntity(entityArticle);
     setEditingId(idToUse);
     onSelectEntity(idToUse);
     setSavedBanner(`"${finalTitle}" tersimpan otomatis (Auto-Saved)`);
   };
 
-  // Automatic real-time save on any field modification
+  // Automatic real-time save ONLY on local field modification (never on remote entityList update)
   useEffect(() => {
     if (isHydratingRef.current) return;
     const hasAnyContent = Boolean(
@@ -419,9 +458,28 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
         ? editingId || entityList[0]?.id || ''
         : editingId;
     const existing = resolvedId ? entityList.find((item) => item.id === resolvedId) : null;
+    const candidateFinalTitle =
+      title.trim() ||
+      existing?.title ||
+      (mode === 'worlds'
+        ? 'My World'
+        : `${cfg.newButtonLabel.replace('New ', '')} ${entityList.length + 1}`);
+
+    const localSig = JSON.stringify({
+      id: resolvedId,
+      title: candidateFinalTitle,
+      content: articleDesc,
+      secret: secretDesc,
+      thumb: sanitizeImageSrc(thumbnail),
+      icon: sanitizeImageSrc(customIcon)
+    });
+    if (resolvedId && localSig === lastSyncedSigRef.current) {
+      return;
+    }
+
     if (
       existing &&
-      existing.title === (title.trim() || existing.title) &&
+      existing.title === candidateFinalTitle &&
       (existing.content || '') === articleDesc &&
       (existing.secretNotes || '') === secretDesc &&
       String(existing.templateValues?.ThumbnailUrl || '') === thumbnail &&
@@ -431,6 +489,7 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     }
 
     const timer = window.setTimeout(() => {
+      if (isHydratingRef.current) return;
       const idToUse =
         mode === 'worlds'
           ? editingId || entityList[0]?.id || `worlds-${Date.now()}`
@@ -480,6 +539,8 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
         updatedAt: nowStamp
       };
 
+      isCreatingNewRef.current = false;
+      lastSyncedSigRef.current = buildEntitySignature(entityArticle);
       lastLoadedKeyRef.current = `${mode}:${idToUse}:${historyRevision}`;
       onSaveEntity(entityArticle);
       if (!editingId) {
@@ -487,7 +548,7 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
         onSelectEntity(idToUse);
       }
       setSavedBanner('Auto-Saved · Ctrl+Z Undo · Ctrl+Shift+Z Redo');
-    }, 320);
+    }, 180);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -497,11 +558,9 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
     thumbnail,
     customIcon,
     editingId,
-    entityList,
     mode,
     cfg,
-    activeWorld.id,
-    historyRevision
+    activeWorld.id
   ]);
 
   return (
@@ -613,6 +672,7 @@ export const EntityCategoryStudioView: React.FC<EntityCategoryStudioViewProps> =
                   <div
                     key={item.id}
                     onClick={() => {
+                      isCreatingNewRef.current = false;
                       setEditingId(item.id);
                       onSelectEntity(item.id);
                     }}

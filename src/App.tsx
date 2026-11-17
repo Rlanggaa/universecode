@@ -1010,6 +1010,13 @@ export default function App() {
       if (typeof bundle.relationshipStudioRaw === 'string') {
         localStorage.setItem(LOCAL_RELATIONSHIP_STUDIO_KEY, bundle.relationshipStudioRaw);
       }
+      if (bundle.cartographyStudioRaw && typeof bundle.cartographyStudioRaw === 'object') {
+        Object.entries(bundle.cartographyStudioRaw).forEach(([mapId, rawData]) => {
+          if (typeof rawData === 'string' && rawData) {
+            localStorage.setItem(`alt_universe_cartography_v2_${mapId}`, rawData);
+          }
+        });
+      }
     } catch {
       // ignore storage errors
     }
@@ -1024,10 +1031,10 @@ export default function App() {
     }, 550);
   };
 
-  // Automatically compress any legacy oversized (> 220KB) Base64 images already in worlds/articles
-  // and clear corrupted Base64 strings so Cloud Vault sync stays under 1 single fast chunk (< 700KB)
+  // Automatically compress any legacy oversized (> 550KB) Base64 images while preserving aspect ratio and WebP transparency
   useEffect(() => {
-    const MAX_LEGACY_DATA_URL_LEN = 220000;
+    if (isHydratingCloudRef.current) return;
+    const MAX_LEGACY_DATA_URL_LEN = 550000;
     const compressDataUrl = (rawUrl: string): Promise<string> =>
       new Promise((resolve) => {
         if (!rawUrl || !rawUrl.startsWith('data:image/') || rawUrl.length <= MAX_LEGACY_DATA_URL_LEN) {
@@ -1037,12 +1044,11 @@ export default function App() {
         const img = new Image();
         img.onload = () => {
           try {
-            const maxW = 1200;
-            const maxH = 720;
-            let w = img.width || maxW;
-            let h = img.height || maxH;
-            if (w > maxW || h > maxH) {
-              const ratio = Math.min(maxW / w, maxH / h);
+            const maxDim = 1280;
+            let w = img.width || maxDim;
+            let h = img.height || maxDim;
+            if (w > maxDim || h > maxDim) {
+              const ratio = Math.min(maxDim / w, maxDim / h);
               w = Math.max(1, Math.round(w * ratio));
               h = Math.max(1, Math.round(h * ratio));
             }
@@ -1051,13 +1057,19 @@ export default function App() {
             canvas.height = h;
             const ctx = canvas.getContext('2d');
             if (!ctx) {
-              resolve('');
+              resolve(rawUrl);
               return;
             }
+            ctx.clearRect(0, 0, w, h);
             ctx.drawImage(img, 0, 0, w, h);
-            resolve(canvas.toDataURL('image/jpeg', 0.78));
+            const webpUrl = canvas.toDataURL('image/webp', 0.78);
+            resolve(
+              webpUrl.startsWith('data:image/webp')
+                ? webpUrl
+                : canvas.toDataURL('image/jpeg', 0.78)
+            );
           } catch {
-            resolve('');
+            resolve(rawUrl);
           }
         };
         img.onerror = () => resolve('');
@@ -1235,6 +1247,18 @@ export default function App() {
       thumbnailUrl: undefined
     }));
 
+    const cartographyStudioRaw: Record<string, string> = {};
+    try {
+      maps.forEach((m) => {
+        const rawMapStudio = localStorage.getItem(`alt_universe_cartography_v2_${m.id}`);
+        if (rawMapStudio) {
+          cartographyStudioRaw[m.id] = rawMapStudio;
+        }
+      });
+    } catch {
+      // ignore storage errors
+    }
+
     const stateBundle: CloudWorkspaceBundle = {
       worlds: compactWorlds,
       activeWorldId: worlds[0]?.id || activeWorldId,
@@ -1251,6 +1275,7 @@ export default function App() {
       recentlyEdited: compactRecentlyEdited,
       timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
       relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
+      cartographyStudioRaw,
       userProfile: isEditingSharedVault
         ? ownerVaultProfileRef.current
         : acct
@@ -5551,6 +5576,7 @@ export default function App() {
               activeWorld={safeActiveWorld}
               maps={maps}
               articles={articles}
+              historyRevision={historyRevision}
               onUpdateMap={(updatedMap) => {
                 if (isReadOnlyViewer) {
                   notifyViewerReadOnly();

@@ -341,7 +341,7 @@ export const RelationshipStudioView: React.FC<RelationshipStudioViewProps> = ({
     return [];
   });
 
-  // Restore state when global Undo / Redo (historyRevision) is triggered
+  // Restore state when global Undo / Redo or Cloud Real-Time Sync (historyRevision) is triggered
   useEffect(() => {
     if (historyRevision === 0) return;
     try {
@@ -359,7 +359,7 @@ export const RelationshipStudioView: React.FC<RelationshipStudioViewProps> = ({
         }
         window.setTimeout(() => {
           isRestoringRef.current = false;
-        }, 0);
+        }, 220);
       }
     } catch {
       // ignore
@@ -367,6 +367,7 @@ export const RelationshipStudioView: React.FC<RelationshipStudioViewProps> = ({
   }, [historyRevision]);
 
   useEffect(() => {
+    if (isRestoringRef.current) return;
     try {
       localStorage.setItem(
         LOCAL_RELATIONSHIP_STUDIO_KEY,
@@ -376,9 +377,7 @@ export const RelationshipStudioView: React.FC<RelationshipStudioViewProps> = ({
           selectedRelTypeId
         })
       );
-      if (!isRestoringRef.current) {
-        window.dispatchEvent(new CustomEvent('alt-universe-substudio-change'));
-      }
+      window.dispatchEvent(new CustomEvent('alt-universe-substudio-change'));
     } catch {
       // ignore quota error
     }

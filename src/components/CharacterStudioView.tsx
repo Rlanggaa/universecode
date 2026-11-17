@@ -206,60 +206,144 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     return '';
   };
 
-  // Load selected character when clicked from Character List or restored via Undo/Redo
+  const isCreatingNewRef = useRef<boolean>(false);
+  const lastSyncedSigRef = useRef<string>('');
+  const hydrateTimerRef = useRef<number | null>(null);
+
+  const buildCharacterSignature = (
+    id: string,
+    titleVal: string,
+    contentVal: string,
+    secretVal: string,
+    thumbVal: string,
+    bgVal: string,
+    locVal: string,
+    spVal: string,
+    condVal: string[],
+    genderVal: string,
+    eyesVal: string,
+    hairVal: string,
+    skinVal: string,
+    hwVal: string,
+    orgVal: string
+  ) =>
+    JSON.stringify({
+      id,
+      title: titleVal,
+      content: contentVal,
+      secret: secretVal,
+      thumb: thumbVal,
+      bg: bgVal,
+      loc: locVal.trim(),
+      sp: spVal.trim(),
+      cond: condVal,
+      gender: genderVal.trim(),
+      eyes: eyesVal.trim(),
+      hair: hairVal.trim(),
+      skin: skinVal.trim(),
+      hw: hwVal.trim(),
+      org: orgVal.trim()
+    });
+
+  // Load selected character when clicked from Character List, restored via Undo/Redo, or updated remotely in real time
   useEffect(() => {
-    if (!selectedCharacterId) return;
-    const syncKey = `${selectedCharacterId}:${historyRevision}`;
-    if (lastLoadedKeyRef.current === syncKey) return;
-    const found = characterList.find((c) => c.id === selectedCharacterId);
+    if (isCreatingNewRef.current) return;
+    const targetId =
+      (selectedCharacterId && characterList.some((c) => c.id === selectedCharacterId)
+        ? selectedCharacterId
+        : '') ||
+      (editingId && characterList.some((c) => c.id === editingId) ? editingId : '') ||
+      characterList[0]?.id ||
+      '';
+    if (!targetId) return;
+    const found = characterList.find((c) => c.id === targetId);
     if (!found) return;
+
+    const rawCond = found.templateValues?.Kondisi;
+    const resolvedConds: string[] = Array.isArray(rawCond)
+      ? rawCond
+      : typeof rawCond === 'string' && rawCond.trim()
+      ? rawCond
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+    const nextThumb = sanitizeImageSrc(found.templateValues?.ThumbnailUrl);
+    const nextBg = sanitizeImageSrc(found.templateValues?.BackgroundUrl);
+    const nextLoc = String(
+      found.templateValues?.['Tempat Tinggal'] || found.templateValues?.LokasiSaatIni || ''
+    );
+    const nextSp = String(
+      found.templateValues?.['Spesies / Ras'] || found.templateValues?.Spesies || ''
+    );
+    const nextGender = String(found.templateValues?.Gender || '');
+    const nextEyes = String(found.templateValues?.Mata || '');
+    const nextHair = String(found.templateValues?.Rambut || '');
+    const nextSkin = String(found.templateValues?.Kulit || '');
+    const nextHw = String(
+      found.templateValues?.['Tinggi / Berat'] || found.templateValues?.TinggiBerat || ''
+    );
+    const nextOrg = String(
+      found.templateValues?.['Afiliasi / Organisasi'] || found.templateValues?.Organisasi || ''
+    );
+
+    const remoteSig = buildCharacterSignature(
+      found.id,
+      found.title,
+      found.content || '',
+      found.secretNotes || '',
+      nextThumb,
+      nextBg,
+      nextLoc,
+      nextSp,
+      resolvedConds,
+      nextGender,
+      nextEyes,
+      nextHair,
+      nextSkin,
+      nextHw,
+      nextOrg
+    );
+
+    const syncKey = `${targetId}:${historyRevision}`;
+    if (lastSyncedSigRef.current === remoteSig && lastLoadedKeyRef.current === syncKey) {
+      return;
+    }
+
     isHydratingRef.current = true;
     lastLoadedKeyRef.current = syncKey;
+    lastSyncedSigRef.current = remoteSig;
     setEditingId(found.id);
     setCharName(found.title);
     setArticleDesc(found.content || '');
     setSecretDesc(found.secretNotes || '');
-    setThumbnail(sanitizeImageSrc(found.templateValues?.ThumbnailUrl));
-    setBackgroundUrl(sanitizeImageSrc(found.templateValues?.BackgroundUrl));
-    setCurrentLocation(
-      String(found.templateValues?.['Tempat Tinggal'] || found.templateValues?.LokasiSaatIni || '')
-    );
-    setSpecies(
-      String(found.templateValues?.['Spesies / Ras'] || found.templateValues?.Spesies || '')
-    );
-    const rawCond = found.templateValues?.Kondisi;
-    if (Array.isArray(rawCond)) {
-      setConditions(rawCond);
-    } else if (typeof rawCond === 'string' && rawCond.trim()) {
-      setConditions(
-        rawCond
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-      );
-    } else {
-      setConditions([]);
+    setThumbnail(nextThumb);
+    setBackgroundUrl(nextBg);
+    setCurrentLocation(nextLoc);
+    setSpecies(nextSp);
+    setConditions(resolvedConds);
+    setGender(nextGender);
+    setEyes(nextEyes);
+    setHair(nextHair);
+    setSkin(nextSkin);
+    setHeightWeight(nextHw);
+    setOrganization(nextOrg);
+
+    if (hydrateTimerRef.current) {
+      window.clearTimeout(hydrateTimerRef.current);
     }
-    setGender(String(found.templateValues?.Gender || ''));
-    setEyes(String(found.templateValues?.Mata || ''));
-    setHair(String(found.templateValues?.Rambut || ''));
-    setSkin(String(found.templateValues?.Kulit || ''));
-    setHeightWeight(
-      String(found.templateValues?.['Tinggi / Berat'] || found.templateValues?.TinggiBerat || '')
-    );
-    setOrganization(
-      String(
-        found.templateValues?.['Afiliasi / Organisasi'] || found.templateValues?.Organisasi || ''
-      )
-    );
-    window.setTimeout(() => {
+    hydrateTimerRef.current = window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 150);
-  }, [selectedCharacterId, characterList, historyRevision]);
+      hydrateTimerRef.current = null;
+    }, 180);
+  }, [selectedCharacterId, editingId, characterList, historyRevision]);
 
   const handleResetNewCharacter = () => {
+    isCreatingNewRef.current = true;
     isHydratingRef.current = true;
     lastLoadedKeyRef.current = `new:${historyRevision}`;
+    lastSyncedSigRef.current = '';
     setEditingId('');
     onSelectCharacter('');
     setCharName('');
@@ -280,7 +364,7 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     setActiveTooltip(null);
     window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 0);
+    }, 80);
   };
 
   // Standardize & compress Character Thumbnail to 9:16 Portrait (720x1280 WebP @ 0.80, preserving transparency)
@@ -493,6 +577,24 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
       updatedAt: nowStamp
     };
 
+    isCreatingNewRef.current = false;
+    lastSyncedSigRef.current = buildCharacterSignature(
+      idToUse,
+      finalName,
+      articleDesc,
+      secretDesc,
+      thumbnail,
+      backgroundUrl,
+      currentLocation,
+      species,
+      conditions,
+      gender,
+      eyes,
+      hair,
+      skin,
+      heightWeight,
+      organization
+    );
     onSaveCharacter(charArticle);
     lastLoadedKeyRef.current = `${idToUse}:${historyRevision}`;
     setEditingId(idToUse);
@@ -500,7 +602,7 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     setSavedBanner(`Karakter "${finalName}" tersimpan otomatis (Auto-Saved)`);
   };
 
-  // Automatic real-time save on any Character field change
+  // Automatic real-time save on any Character field change (triggers ONLY on local form edits)
   useEffect(() => {
     if (isHydratingRef.current) return;
     const hasAnyContent = Boolean(
@@ -522,9 +624,33 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     if (!editingId && !hasAnyContent) return;
 
     const existing = editingId ? characterList.find((c) => c.id === editingId) : null;
+    const effectiveTitle =
+      charName.trim() || existing?.title || `Character ${characterList.length + 1}`;
+    const localSig = buildCharacterSignature(
+      editingId || '',
+      effectiveTitle,
+      articleDesc,
+      secretDesc,
+      thumbnail,
+      backgroundUrl,
+      currentLocation,
+      species,
+      conditions,
+      gender,
+      eyes,
+      hair,
+      skin,
+      heightWeight,
+      organization
+    );
+
+    if (editingId && localSig === lastSyncedSigRef.current) {
+      return;
+    }
+
     if (
       existing &&
-      existing.title === (charName.trim() || existing.title) &&
+      existing.title === effectiveTitle &&
       (existing.content || '') === articleDesc &&
       (existing.secretNotes || '') === secretDesc &&
       String(existing.templateValues?.ThumbnailUrl || '') === thumbnail &&
@@ -539,10 +665,12 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
       String(existing.templateValues?.TinggiBerat || '') === heightWeight.trim() &&
       String(existing.templateValues?.Organisasi || '') === organization.trim()
     ) {
+      lastSyncedSigRef.current = localSig;
       return;
     }
 
     const timer = window.setTimeout(() => {
+      if (isHydratingRef.current) return;
       const idToUse = editingId || `char-${Date.now()}`;
       const finalName =
         charName.trim() || existing?.title || `Character ${characterList.length + 1}`;
@@ -620,6 +748,24 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
         updatedAt: nowStamp
       };
 
+      isCreatingNewRef.current = false;
+      lastSyncedSigRef.current = buildCharacterSignature(
+        idToUse,
+        finalName,
+        articleDesc,
+        secretDesc,
+        thumbnail,
+        backgroundUrl,
+        currentLocation,
+        species,
+        conditions,
+        gender,
+        eyes,
+        hair,
+        skin,
+        heightWeight,
+        organization
+      );
       lastLoadedKeyRef.current = `${idToUse}:${historyRevision}`;
       onSaveCharacter(charArticle);
       if (!editingId) {
@@ -627,7 +773,7 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
         onSelectCharacter(idToUse);
       }
       setSavedBanner('Auto-Saved · Ctrl+Z Undo · Ctrl+Shift+Z Redo');
-    }, 320);
+    }, 180);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -645,11 +791,7 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
     skin,
     heightWeight,
     organization,
-    editingId,
-    characterList,
-    articles,
-    activeWorld.id,
-    historyRevision
+    editingId
   ]);
 
   return (
@@ -770,6 +912,8 @@ export const CharacterStudioView: React.FC<CharacterStudioViewProps> = ({
                         : 'bg-white/92 hover:bg-white text-[#181b26] border border-[#dce3f2] shadow-sm'
                     }`}
                     onClick={() => {
+                      isCreatingNewRef.current = false;
+                      lastSyncedSigRef.current = '';
                       setEditingId(char.id);
                       onSelectCharacter(char.id);
                     }}

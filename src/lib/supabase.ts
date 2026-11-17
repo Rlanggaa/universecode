@@ -145,6 +145,7 @@ export interface CloudWorkspaceBundle {
   recentlyEdited: unknown[];
   timelineStudioRaw: string | null;
   relationshipStudioRaw: string | null;
+  cartographyStudioRaw?: Record<string, string>;
   userProfile?: CloudUserProfile;
   teamMembers?: CloudTeamMember[];
   accessRequests?: CloudAccessRequest[];

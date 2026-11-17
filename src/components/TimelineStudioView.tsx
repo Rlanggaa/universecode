@@ -221,7 +221,7 @@ export const TimelineStudioView: React.FC<TimelineStudioViewProps> = ({
     return '';
   });
 
-  // Restore state when global Undo / Redo (historyRevision) is triggered
+  // Restore state when global Undo / Redo or Cloud Real-Time Sync (historyRevision) is triggered
   useEffect(() => {
     if (historyRevision === 0) return;
     try {
@@ -230,13 +230,34 @@ export const TimelineStudioView: React.FC<TimelineStudioViewProps> = ({
         isRestoringRef.current = true;
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed.timelines)) setTimelines(parsed.timelines);
-        if (Array.isArray(parsed.eventNodes)) setEventNodes(parsed.eventNodes);
+        if (Array.isArray(parsed.eventNodes)) {
+          const nextNodes = parsed.eventNodes as TimelineEventNode[];
+          setEventNodes(nextNodes);
+          if (editingNodeId) {
+            const remoteNode = nextNodes.find((n) => n.id === editingNodeId);
+            if (remoteNode) {
+              setNodeTitle(remoteNode.title);
+              setNodeStartYear(String(remoteNode.startYear));
+              setNodeEndYear(
+                remoteNode.endYear !== null && remoteNode.endYear !== undefined
+                  ? String(remoteNode.endYear)
+                  : ''
+              );
+              setNodeYearOverride(remoteNode.yearLabelOverride || '');
+              setNodeCategoryTag(remoteNode.categoryTag);
+              setNodeCategoryColor(remoteNode.categoryColor);
+              setNodePosition(remoteNode.position);
+              setNodeSummary(remoteNode.summary);
+              setNodeThumbnail(remoteNode.thumbnailUrl || '');
+            }
+          }
+        }
         if (typeof parsed.selectedTimelineId === 'string') {
           setSelectedTimelineId(parsed.selectedTimelineId);
         }
         window.setTimeout(() => {
           isRestoringRef.current = false;
-        }, 0);
+        }, 220);
       }
     } catch {
       // Ignore corrupt storage
@@ -244,14 +265,13 @@ export const TimelineStudioView: React.FC<TimelineStudioViewProps> = ({
   }, [historyRevision]);
 
   useEffect(() => {
+    if (isRestoringRef.current) return;
     try {
       localStorage.setItem(
         LOCAL_TIMELINES_STORAGE_KEY,
         JSON.stringify({ timelines, eventNodes, selectedTimelineId })
       );
-      if (!isRestoringRef.current) {
-        window.dispatchEvent(new CustomEvent('alt-universe-substudio-change'));
-      }
+      window.dispatchEvent(new CustomEvent('alt-universe-substudio-change'));
     } catch {
       // Ignore storage quota errors
     }
@@ -527,8 +547,9 @@ export const TimelineStudioView: React.FC<TimelineStudioViewProps> = ({
     setSelectedExistingEventArticleId(linkedArt?.id || node.linkedEventArticleId || '');
   };
 
-  // Auto-save edits when modifying an existing event node in Canvas Mode
+  // Auto-save edits ONLY when user modifies an existing event node locally in Canvas Mode
   useEffect(() => {
+    if (isRestoringRef.current) return;
     if (!editingNodeId || !activeTimeline || showQuickAddEventModal) return;
     const existing = eventNodes.find((n) => n.id === editingNodeId);
     if (!existing) return;
@@ -555,6 +576,7 @@ export const TimelineStudioView: React.FC<TimelineStudioViewProps> = ({
     }
 
     const timer = window.setTimeout(() => {
+      if (isRestoringRef.current) return;
       setEventNodes((prev) =>
         prev.map((n) =>
           n.id === editingNodeId
@@ -574,7 +596,7 @@ export const TimelineStudioView: React.FC<TimelineStudioViewProps> = ({
             : n
         )
       );
-    }, 320);
+    }, 220);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -589,8 +611,7 @@ export const TimelineStudioView: React.FC<TimelineStudioViewProps> = ({
     nodeCategoryColor,
     nodePosition,
     nodeSummary,
-    nodeThumbnail,
-    eventNodes
+    nodeThumbnail
   ]);
 
   const handleEventThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {

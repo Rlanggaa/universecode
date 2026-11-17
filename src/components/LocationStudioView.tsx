@@ -171,48 +171,125 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     return '';
   };
 
+  const isCreatingNewRef = useRef<boolean>(false);
+  const lastSyncedSigRef = useRef<string>('');
+  const hydrateTimerRef = useRef<number | null>(null);
+
+  const buildLocationSignature = (
+    id: string,
+    titleVal: string,
+    contentVal: string,
+    secretVal: string,
+    thumbVal: string,
+    bgVal: string,
+    iconVal: string,
+    cosmicVal: string,
+    statusVal: string,
+    floraVal: string,
+    resVal: string,
+    inhabVal: string[],
+    orgVal: string
+  ) =>
+    JSON.stringify({
+      id,
+      title: titleVal,
+      content: contentVal,
+      secret: secretVal,
+      thumb: thumbVal,
+      bg: bgVal,
+      icon: iconVal,
+      cosmic: cosmicVal.trim(),
+      status: statusVal.trim(),
+      flora: floraVal.trim(),
+      res: resVal.trim(),
+      inhab: inhabVal,
+      org: orgVal.trim()
+    });
+
   useEffect(() => {
-    if (!selectedLocationId) return;
-    const syncKey = `${selectedLocationId}:${historyRevision}`;
-    if (lastLoadedKeyRef.current === syncKey) return;
-    const found = locationList.find((l) => l.id === selectedLocationId);
+    if (isCreatingNewRef.current) return;
+    const targetId =
+      (selectedLocationId && locationList.some((l) => l.id === selectedLocationId)
+        ? selectedLocationId
+        : '') ||
+      (editingId && locationList.some((l) => l.id === editingId) ? editingId : '') ||
+      locationList[0]?.id ||
+      '';
+    if (!targetId) return;
+    const found = locationList.find((l) => l.id === targetId);
     if (!found) return;
+
+    const rawInhab = found.templateValues?.Penghuni;
+    const resolvedInhab: string[] = Array.isArray(rawInhab)
+      ? rawInhab
+      : typeof rawInhab === 'string' && rawInhab.trim()
+      ? rawInhab
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
+    const nextThumb = sanitizeImageSrc(found.templateValues?.ThumbnailUrl);
+    const nextBg = sanitizeImageSrc(found.templateValues?.BackgroundUrl);
+    const nextIcon = sanitizeImageSrc(found.templateValues?.CustomIconUrl);
+    const nextCosmic = String(found.templateValues?.KlasifikasiKosmis || '');
+    const nextStatus = String(found.templateValues?.StatusWilayah || '');
+    const nextFlora = String(found.templateValues?.FloraFaunaKhas || '');
+    const nextRes = String(found.templateValues?.SumberDaya || '');
+    const nextOrg = String(found.templateValues?.Organisasi || '');
+
+    const remoteSig = buildLocationSignature(
+      found.id,
+      found.title,
+      found.content || '',
+      found.secretNotes || '',
+      nextThumb,
+      nextBg,
+      nextIcon,
+      nextCosmic,
+      nextStatus,
+      nextFlora,
+      nextRes,
+      resolvedInhab,
+      nextOrg
+    );
+
+    const syncKey = `${targetId}:${historyRevision}`;
+    if (lastSyncedSigRef.current === remoteSig && lastLoadedKeyRef.current === syncKey) {
+      return;
+    }
+
     isHydratingRef.current = true;
     lastLoadedKeyRef.current = syncKey;
+    lastSyncedSigRef.current = remoteSig;
     setEditingId(found.id);
     setLocName(found.title);
     setArticleDesc(found.content || '');
     setSecretDesc(found.secretNotes || '');
-    setThumbnail(sanitizeImageSrc(found.templateValues?.ThumbnailUrl));
-    setBackgroundUrl(sanitizeImageSrc(found.templateValues?.BackgroundUrl));
-    setCustomIcon(sanitizeImageSrc(found.templateValues?.CustomIconUrl));
-    setCosmicClassification(String(found.templateValues?.KlasifikasiKosmis || ''));
-    setRegionStatus(String(found.templateValues?.StatusWilayah || ''));
-    setFloraFauna(String(found.templateValues?.FloraFaunaKhas || ''));
-    setResourcesLivelihood(String(found.templateValues?.SumberDaya || ''));
+    setThumbnail(nextThumb);
+    setBackgroundUrl(nextBg);
+    setCustomIcon(nextIcon);
+    setCosmicClassification(nextCosmic);
+    setRegionStatus(nextStatus);
+    setFloraFauna(nextFlora);
+    setResourcesLivelihood(nextRes);
+    setInhabitants(resolvedInhab);
+    setOrganization(nextOrg);
 
-    const rawInhab = found.templateValues?.Penghuni;
-    if (Array.isArray(rawInhab)) {
-      setInhabitants(rawInhab);
-    } else if (typeof rawInhab === 'string' && rawInhab.trim()) {
-      setInhabitants(
-        rawInhab
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-      );
-    } else {
-      setInhabitants([]);
+    if (hydrateTimerRef.current) {
+      window.clearTimeout(hydrateTimerRef.current);
     }
-    setOrganization(String(found.templateValues?.Organisasi || ''));
-    window.setTimeout(() => {
+    hydrateTimerRef.current = window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 150);
-  }, [selectedLocationId, locationList, historyRevision]);
+      hydrateTimerRef.current = null;
+    }, 180);
+  }, [selectedLocationId, editingId, locationList, historyRevision]);
 
   const handleResetNewLocation = () => {
+    isCreatingNewRef.current = true;
     isHydratingRef.current = true;
     lastLoadedKeyRef.current = `new:${historyRevision}`;
+    lastSyncedSigRef.current = '';
     setEditingId('');
     onSelectLocation('');
     setLocName('');
@@ -230,7 +307,7 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     setOrganization('');
     window.setTimeout(() => {
       isHydratingRef.current = false;
-    }, 0);
+    }, 80);
   };
 
   // Standardize & compress Location Thumbnail to 9:16 Portrait (720x1280 WebP @ 0.80, preserving transparency)
@@ -450,6 +527,22 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
       updatedAt: nowStamp
     };
 
+    isCreatingNewRef.current = false;
+    lastSyncedSigRef.current = buildLocationSignature(
+      idToUse,
+      finalName,
+      articleDesc,
+      secretDesc,
+      thumbnail,
+      backgroundUrl,
+      customIcon,
+      cosmicClassification,
+      regionStatus,
+      floraFauna,
+      resourcesLivelihood,
+      inhabitants,
+      organization
+    );
     onSaveLocation(locArticle);
     lastLoadedKeyRef.current = `${idToUse}:${historyRevision}`;
     setEditingId(idToUse);
@@ -457,7 +550,7 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     setSavedBanner(`Lokasi "${finalName}" tersimpan otomatis (Auto-Saved)`);
   };
 
-  // Automatic real-time save on any Location field change
+  // Automatic real-time save on any Location field change (triggers ONLY on local form edits)
   useEffect(() => {
     if (isHydratingRef.current) return;
     const hasAnyContent = Boolean(
@@ -477,9 +570,31 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     if (!editingId && !hasAnyContent) return;
 
     const existing = editingId ? locationList.find((l) => l.id === editingId) : null;
+    const effectiveTitle =
+      locName.trim() || existing?.title || `Location ${locationList.length + 1}`;
+    const localSig = buildLocationSignature(
+      editingId || '',
+      effectiveTitle,
+      articleDesc,
+      secretDesc,
+      thumbnail,
+      backgroundUrl,
+      customIcon,
+      cosmicClassification,
+      regionStatus,
+      floraFauna,
+      resourcesLivelihood,
+      inhabitants,
+      organization
+    );
+
+    if (editingId && localSig === lastSyncedSigRef.current) {
+      return;
+    }
+
     if (
       existing &&
-      existing.title === (locName.trim() || existing.title) &&
+      existing.title === effectiveTitle &&
       (existing.content || '') === articleDesc &&
       (existing.secretNotes || '') === secretDesc &&
       String(existing.templateValues?.ThumbnailUrl || '') === thumbnail &&
@@ -492,10 +607,12 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
       JSON.stringify(existing.templateValues?.Penghuni || []) === JSON.stringify(inhabitants) &&
       String(existing.templateValues?.Organisasi || '') === organization.trim()
     ) {
+      lastSyncedSigRef.current = localSig;
       return;
     }
 
     const timer = window.setTimeout(() => {
+      if (isHydratingRef.current) return;
       const idToUse = editingId || `loc-${Date.now()}`;
       const finalName =
         locName.trim() || existing?.title || `Location ${locationList.length + 1}`;
@@ -552,6 +669,22 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
         updatedAt: nowStamp
       };
 
+      isCreatingNewRef.current = false;
+      lastSyncedSigRef.current = buildLocationSignature(
+        idToUse,
+        finalName,
+        articleDesc,
+        secretDesc,
+        thumbnail,
+        backgroundUrl,
+        customIcon,
+        cosmicClassification,
+        regionStatus,
+        floraFauna,
+        resourcesLivelihood,
+        inhabitants,
+        organization
+      );
       lastLoadedKeyRef.current = `${idToUse}:${historyRevision}`;
       onSaveLocation(locArticle);
       if (!editingId) {
@@ -559,7 +692,7 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
         onSelectLocation(idToUse);
       }
       setSavedBanner('Auto-Saved · Ctrl+Z Undo · Ctrl+Shift+Z Redo');
-    }, 320);
+    }, 180);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -575,10 +708,7 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
     resourcesLivelihood,
     inhabitants,
     organization,
-    editingId,
-    locationList,
-    activeWorld.id,
-    historyRevision
+    editingId
   ]);
 
   return (
@@ -720,6 +850,8 @@ export const LocationStudioView: React.FC<LocationStudioViewProps> = ({
                   <div
                     key={loc.id}
                     onClick={() => {
+                      isCreatingNewRef.current = false;
+                      lastSyncedSigRef.current = '';
                       setEditingId(loc.id);
                       onSelectLocation(loc.id);
                     }}
