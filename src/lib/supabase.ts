@@ -28,6 +28,15 @@ export interface CloudTeamMember {
   addedAtIso: string;
 }
 
+export interface CloudAccessRequest {
+  email: string;
+  displayName: string;
+  avatarUrl?: string;
+  requestedRole: 'editor';
+  status: 'pending' | 'approved' | 'rejected';
+  requestedAtIso: string;
+}
+
 export interface CloudAccountSession {
   uid: string; // passwordToken (derived from email + password)
   emailLookupId?: string; // deterministic ID derived solely from email
@@ -138,6 +147,7 @@ export interface CloudWorkspaceBundle {
   relationshipStudioRaw: string | null;
   userProfile?: CloudUserProfile;
   teamMembers?: CloudTeamMember[];
+  accessRequests?: CloudAccessRequest[];
   lastEditorSessionId?: string;
   lastEditorName?: string;
   lastEditorEmail?: string;
@@ -157,6 +167,8 @@ export function hasWorkspaceBundleContent(
   if (Array.isArray(bundle.notes) && bundle.notes.length > 0) return true;
   if (Array.isArray(bundle.tasks) && bundle.tasks.length > 0) return true;
   if (Array.isArray(bundle.digitalAssets) && bundle.digitalAssets.length > 0) return true;
+  if (Array.isArray(bundle.teamMembers) && bundle.teamMembers.length > 0) return true;
+  if (Array.isArray(bundle.accessRequests) && bundle.accessRequests.length > 0) return true;
   if (
     bundle.userProfile &&
     Boolean(

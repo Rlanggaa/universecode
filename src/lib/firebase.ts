@@ -25,10 +25,39 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 import { CloudWorkspaceBundle } from './supabase';
 
-const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const resolvedFirebaseConfig = {
+  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY || '').trim() || firebaseConfig.apiKey,
+  authDomain:
+    (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || '').trim() || firebaseConfig.authDomain,
+  projectId:
+    (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim() || firebaseConfig.projectId,
+  storageBucket:
+    (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || '').trim() ||
+    firebaseConfig.storageBucket,
+  messagingSenderId:
+    (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '').trim() ||
+    firebaseConfig.messagingSenderId,
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID || '').trim() || firebaseConfig.appId
+};
+
+const resolvedDatabaseId =
+  (import.meta.env.VITE_FIREBASE_DATABASE_ID || '').trim() ||
+  ((import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim() &&
+  (import.meta.env.VITE_FIREBASE_PROJECT_ID || '').trim() !== firebaseConfig.projectId
+    ? '(default)'
+    : firebaseConfig.firestoreDatabaseId);
+
+export const ACTIVE_FIREBASE_PROJECT_ID = resolvedFirebaseConfig.projectId;
+export const ACTIVE_FIREBASE_AUTH_DOMAIN = resolvedFirebaseConfig.authDomain;
+
+const app = initializeApp(resolvedFirebaseConfig);
+export const db =
+  resolvedDatabaseId && resolvedDatabaseId !== '(default)'
+    ? getFirestore(app, resolvedDatabaseId)
+    : getFirestore(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 export enum OperationType {
   CREATE = 'create',
@@ -499,7 +528,8 @@ export async function saveCloudAccountVaultToFirestore(
 
 export async function loadCloudAccountVaultFromFirestore(
   emailLookupId: string,
-  passwordToken?: string
+  passwordToken?: string,
+  bypassPasswordForGoogleAuth = false
 ): Promise<{
   status: 'ok' | 'wrong_password' | 'not_found' | 'error';
   bundle: CloudWorkspaceBundle | null;
@@ -524,10 +554,16 @@ export async function loadCloudAccountVaultFromFirestore(
     }
 
     const data = snap.data();
-    if (safePasswordToken && data.passwordToken && data.passwordToken !== safePasswordToken) {
+    if (
+      !bypassPasswordForGoogleAuth &&
+      safePasswordToken &&
+      data.passwordToken &&
+      data.passwordToken !== safePasswordToken
+    ) {
       return {
         status: 'wrong_password',
         bundle: null,
+        passwordToken: typeof data.passwordToken === 'string' ? data.passwordToken : undefined,
         error:
           'Akun dengan Email/Username ini sudah terdaftar di Cloud, tetapi Password/PIN yang Anda masukkan salah.'
       };

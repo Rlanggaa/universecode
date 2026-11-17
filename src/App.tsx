@@ -122,6 +122,7 @@ import {
   saveCloudAccountVaultToFirestore,
   loadCloudAccountVaultFromFirestore,
   subscribeCloudAccountVault,
+  ACTIVE_FIREBASE_PROJECT_ID,
   User
 } from './lib/firebase';
 import {
@@ -137,6 +138,7 @@ import {
   CloudAccountSession,
   CloudWorkspaceBundle,
   CloudTeamMember,
+  CloudAccessRequest,
   TeamRolePermission
 } from './lib/supabase';
 
@@ -263,11 +265,15 @@ export default function App() {
     `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
   const lastSavedOrReceivedIsoRef = useRef<string>('');
+  const [showShareModal, setShowShareModal] = useState<boolean>(false);
+  const [shareErrorMessage, setShareErrorMessage] = useState<string>('');
+  const [shareStatusMessage, setShareStatusMessage] = useState<string>('');
   const [teamMembers, setTeamMembers] = useState<CloudTeamMember[]>([]);
+  const [accessRequests, setAccessRequests] = useState<CloudAccessRequest[]>([]);
   const [newMemberEmailInput, setNewMemberEmailInput] = useState<string>('');
   const [newMemberRoleInput, setNewMemberRoleInput] = useState<TeamRolePermission>('editor');
   const [liveCollaboratorNotice, setLiveCollaboratorNotice] = useState<string>('');
-  const [shareLinkAccessMode, setShareLinkAccessMode] = useState<'editor' | 'viewer'>('editor');
+  const [shareLinkAccessMode, setShareLinkAccessMode] = useState<'editor' | 'viewer'>('viewer');
   const [shareLinkCopied, setShareLinkCopied] = useState<boolean>(false);
 
   // Detect Canva-style Shared World Link (?world=...&token=...&access=editor|viewer&owner=...)
@@ -913,6 +919,9 @@ export default function App() {
     if (Array.isArray(bundle.teamMembers)) {
       setTeamMembers(bundle.teamMembers as CloudTeamMember[]);
     }
+    if (Array.isArray(bundle.accessRequests)) {
+      setAccessRequests(bundle.accessRequests as CloudAccessRequest[]);
+    }
 
     if (bundle.userProfile && !preservePersonalProfile && !activeAccount?.joinedWorldVaultId) {
       setProfileDisplayName(bundle.userProfile.displayName || '');
@@ -955,12 +964,14 @@ export default function App() {
     timelineStudioRaw: '[]',
     relationshipStudioRaw: '{}',
     teamMembers: [],
+    accessRequests: [],
     updatedAtIso: new Date().toISOString()
   });
 
   const buildCurrentWorkspaceBundle = (
     overrideProfile?: CloudAccountSession,
-    overrideTeamMembers?: CloudTeamMember[]
+    overrideTeamMembers?: CloudTeamMember[],
+    overrideAccessRequests?: CloudAccessRequest[]
   ): CloudWorkspaceBundle => {
     const acct = overrideProfile || activeAccount;
     const nowIso = new Date().toISOString();
@@ -1052,6 +1063,7 @@ export default function App() {
           }
         : undefined,
       teamMembers: overrideTeamMembers ?? teamMembers,
+      accessRequests: overrideAccessRequests ?? accessRequests,
       lastEditorSessionId: clientSessionIdRef.current,
       lastEditorName: acct?.displayName || profileDisplayName || 'Creator',
       lastEditorEmail: acct?.email || '',
@@ -1072,6 +1084,8 @@ export default function App() {
               relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
               userProfile: stateBundle.userProfile,
               teamMembers: overrideTeamMembers ?? (parsed.teamMembers as CloudTeamMember[]) ?? [],
+              accessRequests:
+                overrideAccessRequests ?? (parsed.accessRequests as CloudAccessRequest[]) ?? [],
               lastEditorSessionId: clientSessionIdRef.current,
               lastEditorName: acct?.displayName || 'Creator',
               lastEditorEmail: acct?.email || '',
@@ -1176,9 +1190,26 @@ export default function App() {
         (m) => m.email.trim().toLowerCase() === myEmail
       );
       if (matchedMember) return matchedMember.role;
+      const matchedReq = accessRequests.find(
+        (r) => r.email.trim().toLowerCase() === myEmail && r.status === 'approved'
+      );
+      if (matchedReq) return 'editor';
     }
     return activeSharedWorldInfo.accessMode === 'viewer' ? 'viewer' : 'editor';
-  }, [activeSharedWorldInfo, activeAccount, teamMembers]);
+  }, [activeSharedWorldInfo, activeAccount, teamMembers, accessRequests]);
+
+  // Pending edit access requests for the Owner to review & confirm
+  const pendingAccessRequests = useMemo(
+    () => accessRequests.filter((r) => r.status === 'pending'),
+    [accessRequests]
+  );
+
+  // Current user's own access request status when viewing a Shared World
+  const myAccessRequest = useMemo(() => {
+    if (!activeAccount?.email) return null;
+    const cleanEmail = activeAccount.email.trim().toLowerCase();
+    return accessRequests.find((r) => r.email.trim().toLowerCase() === cleanEmail) || null;
+  }, [activeAccount?.email, accessRequests]);
 
   const syncAccountWorkspaceOnLogin = async (
     account: CloudAccountSession,
@@ -1190,15 +1221,22 @@ export default function App() {
     setAuthErrorMessage('');
     try {
       const emailLookupKey = await resolveEmailLookupKey(account);
+      const isGoogleVerified = Boolean(firebaseUser || account.authMethod === 'google');
       let cloudBundle: CloudWorkspaceBundle | null = null;
       let accountAlreadyExistsInCloud = false;
       let resolvedDisplayName = account.displayName;
 
       // 1. Check Built-in Cloud Vault (Firestore /cloud_accounts/{emailLookupKey})
-      const vaultRes = await loadCloudAccountVaultFromFirestore(emailLookupKey, account.uid);
+      // If authenticated via Google OAuth, bypass passwordToken mismatch and adopt existing vault token for the same email
+      const vaultRes = await loadCloudAccountVaultFromFirestore(
+        emailLookupKey,
+        account.uid,
+        isGoogleVerified
+      );
 
-      // If user is trying to REGISTER a new account, but the email/username is already registered in Cloud:
+      // If user is trying to REGISTER a new account via form, but the email/username is already registered in Cloud:
       if (
+        !isGoogleVerified &&
         authMode === 'register' &&
         (vaultRes.status === 'ok' || vaultRes.status === 'wrong_password')
       ) {
@@ -1208,12 +1246,15 @@ export default function App() {
         return false;
       }
 
-      if (vaultRes.status === 'wrong_password') {
+      if (!isGoogleVerified && vaultRes.status === 'wrong_password') {
         setAuthErrorMessage(
           'Password atau PIN yang Anda masukkan salah untuk akun ini. Silakan periksa kembali Password/PIN Anda.'
         );
         return false;
       }
+
+      const effectiveUid =
+        isGoogleVerified && vaultRes.passwordToken ? vaultRes.passwordToken : account.uid;
 
       if (vaultRes.status === 'ok') {
         accountAlreadyExistsInCloud = true;
@@ -1230,7 +1271,7 @@ export default function App() {
           cloudBundle = supaByEmailKey.bundle;
           accountAlreadyExistsInCloud = true;
         } else {
-          const supaByUid = await loadWorkspaceBundleFromSupabase(account.uid);
+          const supaByUid = await loadWorkspaceBundleFromSupabase(effectiveUid);
           if (supaByUid.bundle && hasWorkspaceBundleContent(supaByUid.bundle)) {
             cloudBundle = supaByUid.bundle;
             accountAlreadyExistsInCloud = true;
@@ -1247,8 +1288,8 @@ export default function App() {
         }
       }
 
-      // STRICT LOGIN CHECK: If user chose "Masuk (Log In)" and account does NOT exist in Cloud:
-      if (authMode === 'login' && !accountAlreadyExistsInCloud) {
+      // STRICT LOGIN CHECK: If user chose "Masuk (Log In)" via form and account does NOT exist in Cloud:
+      if (!isGoogleVerified && authMode === 'login' && !accountAlreadyExistsInCloud) {
         setAuthErrorMessage(
           'Akun tidak tersedia / belum terdaftar. Periksa kembali penulisan Email/Username Anda, atau beralih ke tab "Buat Akun Baru" untuk mendaftarkan akun baru.'
         );
@@ -1263,6 +1304,7 @@ export default function App() {
       );
       const updatedSession: CloudAccountSession = {
         ...account,
+        uid: effectiveUid,
         emailLookupId: emailLookupKey,
         displayName: cloudProfile?.displayName || resolvedDisplayName,
         roleTitle: cloudProfile?.roleTitle || account.roleTitle || 'Worldbuilder & Storyteller',
@@ -1314,7 +1356,7 @@ export default function App() {
         hydrateFromCloudBundle(cloudBundle);
         try {
           localStorage.setItem(
-            `${LOCAL_STORAGE_KEY}_${account.uid}`,
+            `${LOCAL_STORAGE_KEY}_${effectiveUid}`,
             JSON.stringify(cloudBundle)
           );
         } catch {
@@ -1328,7 +1370,7 @@ export default function App() {
       }
 
       // Case B: Check per-account local cache on this device
-      const localAccountRaw = localStorage.getItem(`${LOCAL_STORAGE_KEY}_${account.uid}`);
+      const localAccountRaw = localStorage.getItem(`${LOCAL_STORAGE_KEY}_${effectiveUid}`);
       if (localAccountRaw) {
         try {
           const parsedLocal = JSON.parse(localAccountRaw) as Partial<CloudWorkspaceBundle>;
@@ -1347,7 +1389,7 @@ export default function App() {
             hydrateFromCloudBundle(fullLocalBundle);
             await saveCloudAccountVaultToFirestore(
               emailLookupKey,
-              account.uid,
+              effectiveUid,
               updatedSession.displayName,
               fullLocalBundle
             );
@@ -1370,7 +1412,7 @@ export default function App() {
         if (!isSwitchingFromAnotherAccount && localHasContent) {
           await saveCloudAccountVaultToFirestore(
             emailLookupKey,
-            account.uid,
+            effectiveUid,
             updatedSession.displayName,
             currentLiveBundle
           );
@@ -1406,7 +1448,7 @@ export default function App() {
         hydrateFromCloudBundle(emptyBundle);
         await saveCloudAccountVaultToFirestore(
           emailLookupKey,
-          account.uid,
+          effectiveUid,
           updatedSession.displayName,
           emptyBundle
         );
@@ -1423,7 +1465,7 @@ export default function App() {
       } else {
         await saveCloudAccountVaultToFirestore(
           emailLookupKey,
-          account.uid,
+          effectiveUid,
           updatedSession.displayName,
           currentLiveBundle
         );
@@ -1472,12 +1514,6 @@ export default function App() {
           avatarUrl: user.photoURL || '',
           authMethod: 'google'
         };
-        setCloudAccount(googleAcct);
-        try {
-          localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(googleAcct));
-        } catch {
-          // ignore
-        }
         await syncAccountWorkspaceOnLogin(googleAcct, user, false, 'session-restore');
       }
     });
@@ -1663,6 +1699,7 @@ export default function App() {
     recentlyOpened,
     recentlyEdited,
     teamMembers,
+    accessRequests,
     subStudioTick
   ]);
 
@@ -1804,17 +1841,23 @@ export default function App() {
       const msg = err instanceof Error ? err.message : String(err);
       const currentDomain =
         typeof window !== 'undefined' ? window.location.hostname : 'domain ini';
-      if (
-        msg.includes('unauthorized-domain') ||
-        msg.includes('popup') ||
-        msg.includes('operation-not-allowed')
-      ) {
+      if (msg.includes('unauthorized-domain')) {
         setAuthErrorMessage(
-          `Popup OAuth Google memerlukan pendaftaran domain "${currentDomain}" di Firebase Console (Authentication -> Settings -> Authorized domains). Gunakan form Masuk / Buat Akun Baru di atas yang langsung berfungsi di semua browser dan perangkat!`
+          `Domain "${currentDomain}" belum didaftarkan di Authorized Domains pada project Firebase "${ACTIVE_FIREBASE_PROJECT_ID}". Buka Firebase Console (${ACTIVE_FIREBASE_PROJECT_ID}) -> Authentication -> Settings -> Authorized domains -> klik "Add domain" dan tambahkan "${currentDomain}".`
+        );
+      } else if (msg.includes('operation-not-allowed')) {
+        setAuthErrorMessage(
+          `Provider Google belum aktif pada project Firebase "${ACTIVE_FIREBASE_PROJECT_ID}". Pastikan Anda mengaktifkan Google Sign-In di project "${ACTIVE_FIREBASE_PROJECT_ID}" (atau isi VITE_FIREBASE_* di Vercel jika Anda menggunakan project Firebase sendiri).`
+        );
+      } else if (msg.includes('popup-closed-by-user')) {
+        setAuthErrorMessage('Jendela popup login Google ditutup sebelum proses login selesai.');
+      } else if (msg.includes('popup-blocked')) {
+        setAuthErrorMessage(
+          'Popup login Google diblokir oleh browser Anda. Izinkan popup pada browser ini lalu coba lagi.'
         );
       } else {
         setAuthErrorMessage(
-          `Gagal login popup Google (${msg.slice(0, 100)}). Silakan gunakan form Masuk / Buat Akun Baru di atas.`
+          `Gagal login Google (${msg.slice(0, 120)}) pada project "${ACTIVE_FIREBASE_PROJECT_ID}".`
         );
       }
     } finally {
@@ -1840,12 +1883,19 @@ export default function App() {
       nextMember,
       ...teamMembers.filter((m) => m.email.toLowerCase() !== cleanEmail)
     ];
+    const updatedRequests = accessRequests.map((r) =>
+      r.email.toLowerCase() === cleanEmail
+        ? { ...r, status: (newMemberRoleInput === 'editor' ? 'approved' : 'rejected') as 'approved' | 'rejected' }
+        : r
+    );
     setTeamMembers(updatedList);
+    setAccessRequests(updatedRequests);
     setNewMemberEmailInput('');
 
     setIsSyncingCloud(true);
+    setShareErrorMessage('');
     try {
-      const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedList);
+      const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedList, updatedRequests);
       lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
       const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
       await saveCloudAccountVaultToFirestore(
@@ -1854,23 +1904,33 @@ export default function App() {
         activeAccount.displayName,
         bundle
       );
-      setAuthStatusMessage(
+      setShareStatusMessage(
         `Izin akses untuk "${cleanEmail}" (${
-          newMemberRoleInput === 'editor' ? 'Editor - Bisa Edit' : 'Viewer - Hanya Baca'
-        }) berhasil disimpan ke Cloud!`
+          newMemberRoleInput === 'editor' ? 'Editor - Bisa Edit' : 'Viewer - Hanya Lihat'
+        }) berhasil disimpan!`
       );
     } finally {
       setIsSyncingCloud(false);
     }
   };
 
-  const handleRemoveTeamMemberPermission = async (targetEmail: string) => {
+  const handleUpdateTeamMemberRole = async (
+    targetEmail: string,
+    nextRole: TeamRolePermission
+  ) => {
     if (!activeAccount) return;
-    const updatedList = teamMembers.filter(
-      (m) => m.email.toLowerCase() !== targetEmail.toLowerCase()
+    const cleanEmail = targetEmail.trim().toLowerCase();
+    const updatedList = teamMembers.map((m) =>
+      m.email.toLowerCase() === cleanEmail ? { ...m, role: nextRole } : m
+    );
+    const updatedRequests = accessRequests.map((r) =>
+      r.email.toLowerCase() === cleanEmail
+        ? { ...r, status: (nextRole === 'editor' ? 'approved' : 'rejected') as 'approved' | 'rejected' }
+        : r
     );
     setTeamMembers(updatedList);
-    const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedList);
+    setAccessRequests(updatedRequests);
+    const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedList, updatedRequests);
     lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
     const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
     await saveCloudAccountVaultToFirestore(
@@ -1879,11 +1939,188 @@ export default function App() {
       activeAccount.displayName,
       bundle
     );
+    setShareStatusMessage(
+      `Role untuk "${cleanEmail}" diubah menjadi ${
+        nextRole === 'editor' ? 'Editor (Bisa Edit)' : 'Viewer (Hanya Lihat)'
+      }.`
+    );
+  };
+
+  const handleRemoveTeamMemberPermission = async (targetEmail: string) => {
+    if (!activeAccount) return;
+    const cleanEmail = targetEmail.trim().toLowerCase();
+    const updatedList = teamMembers.filter(
+      (m) => m.email.toLowerCase() !== cleanEmail
+    );
+    const updatedRequests = accessRequests.filter(
+      (r) => r.email.toLowerCase() !== cleanEmail
+    );
+    setTeamMembers(updatedList);
+    setAccessRequests(updatedRequests);
+    const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedList, updatedRequests);
+    lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+    const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
+    await saveCloudAccountVaultToFirestore(
+      vaultKey,
+      passwordToken,
+      activeAccount.displayName,
+      bundle
+    );
+    setShareStatusMessage(`Akses untuk "${cleanEmail}" telah dihapus.`);
+  };
+
+  // Owner: Confirm (Approve) an incoming Edit Access Request from another account
+  const handleApproveAccessRequest = async (req: CloudAccessRequest) => {
+    if (!activeAccount) return;
+    const cleanEmail = req.email.trim().toLowerCase();
+    const approvedMember: CloudTeamMember = {
+      email: cleanEmail,
+      displayName: req.displayName || (cleanEmail.includes('@') ? cleanEmail.split('@')[0] : cleanEmail),
+      role: 'editor',
+      addedAtIso: new Date().toISOString()
+    };
+
+    const updatedMembers = [
+      approvedMember,
+      ...teamMembers.filter((m) => m.email.toLowerCase() !== cleanEmail)
+    ];
+    const updatedRequests = accessRequests.map((r) =>
+      r.email.toLowerCase() === cleanEmail ? { ...r, status: 'approved' as const } : r
+    );
+
+    setTeamMembers(updatedMembers);
+    setAccessRequests(updatedRequests);
+    setIsSyncingCloud(true);
+    setShareErrorMessage('');
+    try {
+      const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedMembers, updatedRequests);
+      lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+      const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
+      await saveCloudAccountVaultToFirestore(
+        vaultKey,
+        passwordToken,
+        activeAccount.displayName,
+        bundle
+      );
+      setShareStatusMessage(
+        `Permintaan akses dari "${req.displayName}" (${cleanEmail}) disetujui sebagai Editor!`
+      );
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // Owner: Reject an incoming Edit Access Request
+  const handleRejectAccessRequest = async (targetEmail: string) => {
+    if (!activeAccount) return;
+    const cleanEmail = targetEmail.trim().toLowerCase();
+    const updatedMembers = teamMembers.filter((m) => m.email.toLowerCase() !== cleanEmail);
+    const updatedRequests = accessRequests.map((r) =>
+      r.email.toLowerCase() === cleanEmail ? { ...r, status: 'rejected' as const } : r
+    );
+
+    setTeamMembers(updatedMembers);
+    setAccessRequests(updatedRequests);
+    setIsSyncingCloud(true);
+    setShareErrorMessage('');
+    try {
+      const bundle = buildCurrentWorkspaceBundle(activeAccount, updatedMembers, updatedRequests);
+      lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+      const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
+      await saveCloudAccountVaultToFirestore(
+        vaultKey,
+        passwordToken,
+        activeAccount.displayName,
+        bundle
+      );
+      setShareStatusMessage(`Permintaan akses dari "${cleanEmail}" telah ditolak.`);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
+  // Team Member (Viewer): Request Edit Access from the World Owner
+  const handleRequestEditAccess = async () => {
+    if (!activeAccount) {
+      setShowShareModal(false);
+      setAuthModalMode('login');
+      setShowAuthModal(true);
+      setAuthErrorMessage(
+        'Silakan masuk ke akun pribadi Anda terlebih dahulu agar Owner dapat melihat nama & email Anda pada daftar Permintaan Akses Edit.'
+      );
+      return;
+    }
+    if (!activeSharedWorldInfo) return;
+
+    setIsSyncingCloud(true);
+    setShareErrorMessage('');
+    setShareStatusMessage('');
+    try {
+      const { vaultKey, passwordToken } = activeSharedWorldInfo;
+      const cleanEmail = activeAccount.email.trim().toLowerCase();
+      const newReq: CloudAccessRequest = {
+        email: cleanEmail,
+        displayName:
+          activeAccount.displayName ||
+          (cleanEmail.includes('@') ? cleanEmail.split('@')[0] : cleanEmail),
+        avatarUrl: activeAccount.avatarUrl || '',
+        requestedRole: 'editor',
+        status: 'pending',
+        requestedAtIso: new Date().toISOString()
+      };
+
+      // Fetch latest bundle from Owner's Cloud Vault so Viewer only appends their accessRequest without overwriting lore
+      const latestRes = await loadCloudAccountVaultFromFirestore(vaultKey, passwordToken);
+      const baseBundle: CloudWorkspaceBundle =
+        latestRes.status === 'ok' && latestRes.bundle
+          ? latestRes.bundle
+          : buildCurrentWorkspaceBundle(activeAccount);
+
+      const existingReqs = Array.isArray(baseBundle.accessRequests)
+        ? baseBundle.accessRequests
+        : [];
+      const updatedRequests: CloudAccessRequest[] = [
+        newReq,
+        ...existingReqs.filter((r) => r.email.toLowerCase() !== cleanEmail)
+      ];
+
+      const updatedBundle: CloudWorkspaceBundle = {
+        ...baseBundle,
+        accessRequests: updatedRequests,
+        lastEditorSessionId: clientSessionIdRef.current,
+        lastEditorName: `${newReq.displayName} (Minta Akses Edit)`,
+        lastEditorEmail: cleanEmail,
+        updatedAtIso: new Date().toISOString()
+      };
+
+      lastSavedOrReceivedIsoRef.current = updatedBundle.updatedAtIso;
+      setAccessRequests(updatedRequests);
+
+      const saveRes = await saveCloudAccountVaultToFirestore(
+        vaultKey,
+        passwordToken,
+        latestRes.displayName || activeSharedWorldInfo.ownerName,
+        updatedBundle
+      );
+
+      if (saveRes.ok) {
+        setShareStatusMessage(
+          `Permintaan akses Edit berhasil dikirim ke "${activeSharedWorldInfo.ownerName}"! Begitu dikonfirmasi oleh Owner, akun Anda otomatis dapat mengedit secara real-time.`
+        );
+      } else {
+        setShareErrorMessage(
+          saveRes.error || 'Gagal mengirim permintaan akses ke Cloud.'
+        );
+      }
+    } finally {
+      setIsSyncingCloud(false);
+    }
   };
 
   // Owner: Copy Canva-style Share World Link ("Salin Link Desain World")
   const handleCopyShareWorldLink = async () => {
     if (!activeAccount) {
+      setShowShareModal(false);
       setAuthModalMode('login');
       setShowAuthModal(true);
       setAuthErrorMessage(
@@ -1893,8 +2130,8 @@ export default function App() {
     }
 
     setIsSyncingCloud(true);
-    setAuthErrorMessage('');
-    setAuthStatusMessage('');
+    setShareErrorMessage('');
+    setShareStatusMessage('');
     try {
       const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
       const ownerName =
@@ -1935,11 +2172,11 @@ export default function App() {
         setHistoryToastText('');
       }, 3200);
 
-      setAuthStatusMessage(
+      setShareStatusMessage(
         `Link desain World (${
           shareLinkAccessMode === 'editor'
-            ? 'Siapa saja dengan link: Bisa Edit Real-Time'
-            : 'Siapa saja dengan link: Hanya Lihat'
+            ? 'Siapa saja dengan link: Langsung Bisa Edit'
+            : 'Siapa saja dengan link: Hanya Lihat (Harus Minta Izin untuk Edit)'
         }) berhasil disalin! Kirimkan link tersebut ke tim Anda.`
       );
     } finally {
@@ -3431,42 +3668,49 @@ export default function App() {
 
             <span className="h-5 w-px bg-[#d5dced]" />
 
-            {/* Canva-Style "Bagikan (Share Link)" Button in Header */}
+            {/* Dedicated Canva-Style "Bagikan (Share)" Button in Header (Separate from Profile) */}
             <button
               type="button"
               onClick={() => {
-                setAuthErrorMessage('');
-                setAuthStatusMessage('');
-                setShowAuthModal(true);
+                setShareErrorMessage('');
+                setShareStatusMessage('');
+                setShowAuthModal(false);
+                setShowShareModal(true);
               }}
-              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition shadow-2xs cursor-pointer ${
+              className={`relative inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition shadow-2xs cursor-pointer ${
                 activeSharedWorldInfo
                   ? 'bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800'
                   : 'bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-[#181b26]'
               }`}
               title={
                 activeSharedWorldInfo
-                  ? `Terhubung ke Link World: ${activeSharedWorldInfo.ownerName}`
-                  : 'Bagikan Link Desain World ke Tim (Seperti Canva)'
+                  ? `Terhubung ke Link World: ${activeSharedWorldInfo.ownerName} (${currentUserTeamRole.toUpperCase()})`
+                  : 'Bagikan Link Desain World & Kelola Permintaan Akses Tim'
               }
             >
               <Share2 className="w-3.5 h-3.5 text-[#6d7696]" />
               <span className="hidden sm:inline">
-                {activeSharedWorldInfo ? 'Tim Live' : 'Bagikan'}
+                {activeSharedWorldInfo ? 'Akses Tim' : 'Bagikan'}
               </span>
+              {!activeSharedWorldInfo && pendingAccessRequests.length > 0 && (
+                <span className="ml-0.5 px-1.5 py-0.2 rounded-full bg-rose-600 text-white text-[10px] font-extrabold leading-tight">
+                  {pendingAccessRequests.length}
+                </span>
+              )}
             </button>
 
-            {/* User Profile Avatar & Account Controls */}
+            {/* Dedicated User Profile Avatar & Account Button in Header */}
             {activeAccount ? (
               <button
                 type="button"
                 onClick={() => {
                   setAuthErrorMessage('');
                   setAuthStatusMessage('');
+                  setShowShareModal(false);
                   setShowAuthModal(true);
                 }}
                 className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-xs text-[#181b26] transition shadow-2xs cursor-pointer"
-                title={`Profil: ${activeAccount.displayName} (${activeAccount.email}) — Klik untuk Personalisasi Profil & Bagikan Link World`}
+                title={`Profil: ${activeAccount.displayName} (${activeAccount.email}) — Klik untuk Personalisasi Profil & Cloud Sync`}
               >
                 {activeAccount.avatarUrl ? (
                   <img
@@ -3490,6 +3734,7 @@ export default function App() {
                   setAuthErrorMessage('');
                   setAuthStatusMessage('');
                   setAuthModalMode('login');
+                  setShowShareModal(false);
                   setShowAuthModal(true);
                 }}
                 className="px-4 py-1.5 rounded-full bg-white hover:bg-[#eef1f8] border border-[#494a52] text-xs font-bold text-[#181b26] transition shadow-2xs cursor-pointer"
@@ -5240,195 +5485,8 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* ========================================================== */}
-                  {/* CANVA-STYLE SHARE WORLD LINK ("BAGIKAN LINK DESAIN WORLD") */}
-                  {/* ========================================================== */}
-                  <div className="p-4 rounded-2xl bg-[#f8f9fc] border border-[#cbd3e6] space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-[#181b26]">
-                        <Link2 className="w-4 h-4 text-[#6d7696]" />
-                        <span>Bagikan Link Desain World (Canva Share)</span>
-                      </div>
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          currentUserTeamRole === 'owner'
-                            ? 'bg-indigo-100 text-indigo-800 border border-indigo-300'
-                            : currentUserTeamRole === 'editor'
-                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                            : 'bg-amber-100 text-amber-800 border border-amber-300'
-                        }`}
-                      >
-                        Role: {currentUserTeamRole.toUpperCase()}
-                      </span>
-                    </div>
-
-                    {liveCollaboratorNotice && (
-                      <div className="px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-[11px] font-medium">
-                        ⚡ {liveCollaboratorNotice}
-                      </div>
-                    )}
-
-                    {activeSharedWorldInfo ? (
-                      <div className="space-y-2.5">
-                        <div className="p-3 rounded-xl bg-white border border-[#dce3f2] text-xs space-y-1">
-                          <div className="font-semibold text-[#181b26]">
-                            Sedang Mengakses Link World:{' '}
-                            <span className="text-[#6d7696]">
-                              {activeSharedWorldInfo.ownerName}
-                            </span>
-                          </div>
-                          <div className="text-[11px] text-[#52586e] leading-relaxed">
-                            Anda terhubung melalui Link Kolaborasi dengan profil pribadi{' '}
-                            <strong>{activeAccount.displayName}</strong> sebagai{' '}
-                            <strong>
-                              {currentUserTeamRole === 'editor'
-                                ? 'Editor (Dapat menulis & mengedit secara real-time)'
-                                : 'Viewer (Hanya lihat)'}
-                            </strong>.
-                          </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={handleCopyShareWorldLink}
-                            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold transition cursor-pointer"
-                          >
-                            <Copy className="w-3.5 h-3.5" />
-                            <span>{shareLinkCopied ? 'Link Tersalin!' : 'Salin Link World'}</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleLeaveSharedTeamWorld}
-                            className="flex-1 py-2 rounded-xl border border-[#879fd0] bg-white hover:bg-[#eef1f8] text-[#181b26] text-xs font-semibold transition cursor-pointer"
-                          >
-                            Kembali ke World Pribadi
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        <p className="text-[11px] text-[#52586e] leading-relaxed">
-                          Salin link desain World Anda dan kirimkan ke anggota tim. Siapa pun yang membuka link tersebut akan langsung melihat dan mengedit World ini secara <strong>Real-Time</strong>.
-                        </p>
-
-                        {/* Access level selector (like Canva's "Anyone with the link -> Can edit / Can view") */}
-                        <div className="space-y-1.5">
-                          <label className="block text-[11px] font-semibold text-[#52586e]">
-                            Izin Akses Tautan (Link Access):
-                          </label>
-                          <select
-                            value={shareLinkAccessMode}
-                            onChange={(e) =>
-                              setShareLinkAccessMode(e.target.value as 'editor' | 'viewer')
-                            }
-                            className="w-full px-3 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs font-semibold text-[#181b26] focus:outline-none focus:border-[#6d7696]"
-                          >
-                            <option value="editor">
-                              Siapa saja yang memiliki link — Bisa Edit (Editor)
-                            </option>
-                            <option value="viewer">
-                              Siapa saja yang memiliki link — Hanya Lihat (Viewer)
-                            </option>
-                          </select>
-                        </div>
-
-                        <button
-                          type="button"
-                          disabled={isSyncingCloud}
-                          onClick={handleCopyShareWorldLink}
-                          className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer ${
-                            shareLinkCopied
-                              ? 'bg-emerald-600 text-white'
-                              : 'bg-[#6d7696] hover:bg-[#5c6584] text-white'
-                          }`}
-                        >
-                          {shareLinkCopied ? (
-                            <>
-                              <Check className="w-4 h-4" />
-                              <span>Link World Berhasil Disalin!</span>
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="w-4 h-4" />
-                              <span>Salin Link Desain World</span>
-                            </>
-                          )}
-                        </button>
-
-                        {/* Optional: Per-email role override */}
-                        <form
-                          onSubmit={handleAddTeamMemberPermission}
-                          className="pt-2.5 border-t border-[#dce3f2] space-y-2"
-                        >
-                          <label className="block text-[11px] font-semibold text-[#52586e]">
-                            Atur Izin Khusus per Email Anggota Tim (Opsional):
-                          </label>
-                          <div className="flex gap-1.5">
-                            <input
-                              type="text"
-                              value={newMemberEmailInput}
-                              onChange={(e) => setNewMemberEmailInput(e.target.value)}
-                              placeholder="Email/username tim..."
-                              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
-                            />
-                            <select
-                              value={newMemberRoleInput}
-                              onChange={(e) =>
-                                setNewMemberRoleInput(e.target.value as TeamRolePermission)
-                              }
-                              className="px-2 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs font-semibold text-[#181b26]"
-                            >
-                              <option value="editor">Editor</option>
-                              <option value="viewer">Viewer</option>
-                            </select>
-                            <button
-                              type="submit"
-                              className="px-3 py-1.5 rounded-xl bg-white hover:bg-[#eef1f8] border border-[#6d7696] text-[#181b26] text-xs font-bold shrink-0 cursor-pointer"
-                            >
-                              + Izin
-                            </button>
-                          </div>
-                        </form>
-
-                        {teamMembers.length > 0 && (
-                          <div className="space-y-1.5 max-h-28 overflow-y-auto pr-1">
-                            {teamMembers.map((mem) => (
-                              <div
-                                key={mem.email}
-                                className="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-white border border-[#dce3f2] text-[11px]"
-                              >
-                                <span className="font-medium text-[#181b26] truncate">
-                                  {mem.email}
-                                </span>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <span
-                                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                      mem.role === 'editor'
-                                        ? 'bg-emerald-100 text-emerald-800'
-                                        : 'bg-amber-100 text-amber-800'
-                                    }`}
-                                  >
-                                    {mem.role === 'editor' ? 'Editor' : 'Viewer'}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveTeamMemberPermission(mem.email)}
-                                    className="text-rose-600 hover:underline font-bold"
-                                    title="Hapus anggota"
-                                  >
-                                    ✕
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
                   <p className="text-[11px] text-[#52586e] leading-relaxed">
-                    Seluruh perubahan World, Story, Karakter, dan Peta disinkronkan secara <strong>Live Real-Time</strong> ke semua anggota tim yang membuka link desain World Anda.
+                    Untuk membagikan link desain World ke tim atau mengonfirmasi permintaan akses Edit dari akun lain, gunakan tombol <strong>Bagikan</strong> di bagian atas halaman.
                   </p>
 
                   <button
@@ -5583,6 +5641,420 @@ export default function App() {
                       </>
                     )}
                   </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* MODAL KHUSUS BAGIKAN (SHARE LINK) & DAFTAR PERMINTAAN AKSES EDIT     */}
+      {/* ==================================================================== */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white border border-[#cbd3e6] shadow-2xl overflow-hidden text-[#181b26]">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-[#f2f4f9] border-b border-[#dce3f2] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-[#6d7696] text-white flex items-center justify-center font-bold text-sm">
+                  <Share2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-[#181b26]">
+                    {activeSharedWorldInfo
+                      ? 'Status Kolaborasi & Izin Akses World'
+                      : 'Bagikan Desain World & Izin Tim'}
+                  </h3>
+                  <p className="text-[11px] text-[#6d7696]">
+                    {activeSharedWorldInfo
+                      ? `Terhubung ke World milik ${activeSharedWorldInfo.ownerName}`
+                      : 'Salin link kolaborasi & konfirmasi permintaan akses edit tim'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowShareModal(false)}
+                className="w-7 h-7 rounded-full hover:bg-[#e6ecf7] text-[#6d7696] hover:text-[#181b26] flex items-center justify-center text-xs font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 max-h-[84vh] overflow-y-auto">
+              {/* Role & Live Sync Badge */}
+              <div className="flex items-center justify-between px-3.5 py-2 rounded-2xl bg-[#f8f9fc] border border-[#dce3f2] text-xs">
+                <span className="text-[#52586e] font-medium">Hak Akses Anda di World Ini:</span>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                    currentUserTeamRole === 'owner'
+                      ? 'bg-indigo-100 text-indigo-800 border border-indigo-300'
+                      : currentUserTeamRole === 'editor'
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      : 'bg-amber-100 text-amber-800 border border-amber-300'
+                  }`}
+                >
+                  {currentUserTeamRole === 'owner'
+                    ? 'OWNER (Pemilik World)'
+                    : currentUserTeamRole === 'editor'
+                    ? 'EDITOR (Bisa Edit)'
+                    : 'VIEWER (Hanya Lihat)'}
+                </span>
+              </div>
+
+              {liveCollaboratorNotice && (
+                <div className="px-3.5 py-2 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs font-medium">
+                  ⚡ {liveCollaboratorNotice}
+                </div>
+              )}
+
+              {shareErrorMessage && (
+                <div className="p-3 rounded-2xl bg-red-50 border border-red-200 text-red-700 text-xs leading-relaxed font-medium">
+                  {shareErrorMessage}
+                </div>
+              )}
+
+              {shareStatusMessage && (
+                <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium leading-relaxed">
+                  {shareStatusMessage}
+                </div>
+              )}
+
+              {activeSharedWorldInfo ? (
+                /* ============================================================ */
+                /* TAMPILAN UNTUK ANGGOTA TIM YANG MEMBUKA LINK WORLD BERSAMA   */
+                /* ============================================================ */
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-[#f2f4f9] border border-[#cbd3e6] space-y-2.5">
+                    <div className="text-xs font-bold text-[#181b26]">
+                      Sedang Mengakses World:{' '}
+                      <span className="text-[#6d7696]">{activeSharedWorldInfo.ownerName}</span>
+                    </div>
+                    <p className="text-[11px] text-[#52586e] leading-relaxed">
+                      {activeAccount ? (
+                        <>
+                          Anda masuk menggunakan akun{' '}
+                          <strong>{activeAccount.displayName}</strong> ({activeAccount.email}).
+                        </>
+                      ) : (
+                        <>
+                          Anda sedang membuka link ini sebagai pengunjung. Silakan{' '}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowShareModal(false);
+                              setShowAuthModal(true);
+                            }}
+                            className="font-bold text-[#6d7696] underline cursor-pointer"
+                          >
+                            Log in ke akun Anda
+                          </button>{' '}
+                          untuk meminta akses edit atau menampilkan nama profil Anda.
+                        </>
+                      )}
+                    </p>
+
+                    {/* Request Edit Access Card when user is currently a Viewer */}
+                    {currentUserTeamRole === 'viewer' ? (
+                      <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 space-y-2.5">
+                        <div className="text-xs font-bold text-amber-900">
+                          Ingin Ikut Menulis & Mengedit World Ini?
+                        </div>
+                        {myAccessRequest?.status === 'pending' ? (
+                          <div className="text-[11px] text-amber-800 font-medium leading-relaxed">
+                            ⏳ Permintaan akses Edit Anda (<strong>{activeAccount?.email}</strong>) sudah dikirim dan sedang <strong>menunggu konfirmasi dari Owner ({activeSharedWorldInfo.ownerName})</strong>. Begitu disetujui, halaman ini otomatis berubah menjadi mode Editor secara real-time!
+                          </div>
+                        ) : myAccessRequest?.status === 'rejected' ? (
+                          <div className="text-[11px] text-rose-700 font-medium leading-relaxed">
+                            Permintaan akses Edit Anda sebelumnya belum disetujui oleh Owner. Anda dapat mengajukan ulang permintaan di bawah.
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-amber-800 leading-relaxed">
+                            Saat ini Anda berada dalam mode <strong>Hanya Lihat (Viewer)</strong>. Klik tombol di bawah untuk mengirim permintaan akses Edit ke Owner.
+                          </p>
+                        )}
+
+                        <button
+                          type="button"
+                          disabled={isSyncingCloud}
+                          onClick={handleRequestEditAccess}
+                          className="w-full py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold transition shadow-xs disabled:opacity-50 cursor-pointer"
+                        >
+                          {isSyncingCloud
+                            ? 'Mengirim Permintaan...'
+                            : myAccessRequest?.status === 'pending'
+                            ? 'Kirim Ulang Permintaan Akses Edit'
+                            : 'Minta Akses Edit ke Owner'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900 font-medium leading-relaxed">
+                        ✅ Akun Anda memiliki akses <strong>Editor</strong>. Seluruh perubahan yang Anda tulis pada World, Story, Character, dan Peta otomatis tersimpan secara real-time ke Cloud!
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex gap-2.5">
+                    <button
+                      type="button"
+                      onClick={handleCopyShareWorldLink}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold transition cursor-pointer"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{shareLinkCopied ? 'Link Tersalin!' : 'Salin Link World'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleLeaveSharedTeamWorld();
+                        setShowShareModal(false);
+                      }}
+                      className="flex-1 py-2.5 rounded-xl border border-[#879fd0] bg-white hover:bg-[#eef1f8] text-[#181b26] text-xs font-semibold transition cursor-pointer"
+                    >
+                      Kembali ke World Pribadi
+                    </button>
+                  </div>
+                </div>
+              ) : !activeAccount ? (
+                /* ============================================================ */
+                /* BELUM LOGIN SAAT KLIK BAGIKAN                                */
+                /* ============================================================ */
+                <div className="p-4 rounded-2xl bg-[#f2f4f9] border border-[#cbd3e6] space-y-3 text-center">
+                  <p className="text-xs text-[#181b26] font-medium leading-relaxed">
+                    Silakan masuk ke akun Anda terlebih dahulu untuk membuat Link Kolaborasi World dan mengelola daftar permintaan akses tim.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowShareModal(false);
+                      setAuthModalMode('login');
+                      setShowAuthModal(true);
+                    }}
+                    className="w-full py-2.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold transition cursor-pointer"
+                  >
+                    Masuk / Buat Akun Sekarang
+                  </button>
+                </div>
+              ) : (
+                /* ============================================================ */
+                /* TAMPILAN UNTUK OWNER WORLD:                                  */
+                /* 1. Salin Link Desain World (Canva Share)                     */
+                /* 2. Daftar Permintaan Akses Edit (Terima / Tolak)             */
+                /* 3. Daftar Anggota Tim & Kelola Izin Akses                    */
+                /* ============================================================ */
+                <div className="space-y-4">
+                  {/* SECTION 1: CANVA-STYLE SHARE LINK */}
+                  <div className="p-4 rounded-2xl bg-[#f2f4f9] border border-[#cbd3e6] space-y-3">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-[#181b26]">
+                      <Link2 className="w-4 h-4 text-[#6d7696]" />
+                      <span>1. Bagikan Tautan Desain World (Canva Share Link)</span>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="block text-[11px] font-semibold text-[#52586e]">
+                        Izin Default untuk Orang yang Membuka Link:
+                      </label>
+                      <select
+                        value={shareLinkAccessMode}
+                        onChange={(e) =>
+                          setShareLinkAccessMode(e.target.value as 'editor' | 'viewer')
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs font-semibold text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                      >
+                        <option value="viewer">
+                          Siapa saja dengan link — Hanya Lihat (Minta Izin untuk Edit)
+                        </option>
+                        <option value="editor">
+                          Siapa saja dengan link — Langsung Bisa Edit (Editor)
+                        </option>
+                      </select>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isSyncingCloud}
+                      onClick={handleCopyShareWorldLink}
+                      className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer ${
+                        shareLinkCopied
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-[#6d7696] hover:bg-[#5c6584] text-white'
+                      }`}
+                    >
+                      {shareLinkCopied ? (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>Link Desain World Berhasil Disalin!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4" />
+                          <span>Salin Link Desain World</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* SECTION 2: DAFTAR PERMINTAAN AKSES EDIT (PENDING ACCESS REQUESTS) */}
+                  <div className="p-4 rounded-2xl bg-[#f8f9fc] border border-[#cbd3e6] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-bold text-[#181b26]">
+                        2. Daftar Permintaan Akses Edit
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          pendingAccessRequests.length > 0
+                            ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                            : 'bg-[#e6ecf7] text-[#52586e]'
+                        }`}
+                      >
+                        {pendingAccessRequests.length} Menunggu
+                      </span>
+                    </div>
+
+                    {pendingAccessRequests.length === 0 ? (
+                      <div className="p-3 rounded-xl bg-white border border-[#dce3f2] text-[11px] text-[#6d7696] text-center">
+                        Belum ada permintaan akses edit baru dari akun lain.
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-44 overflow-y-auto pr-1">
+                        {pendingAccessRequests.map((req) => (
+                          <div
+                            key={req.email}
+                            className="p-3 rounded-xl bg-white border border-amber-300 shadow-2xs space-y-2"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              {req.avatarUrl ? (
+                                <img
+                                  src={req.avatarUrl}
+                                  alt={req.displayName}
+                                  className="w-8 h-8 rounded-full object-cover border border-[#879fd0] shrink-0"
+                                />
+                              ) : (
+                                <div className="w-8 h-8 rounded-full bg-[#6d7696] text-white font-bold flex items-center justify-center text-xs shrink-0">
+                                  {(req.displayName || req.email || 'U')[0].toUpperCase()}
+                                </div>
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-bold text-[#181b26] truncate">
+                                  {req.displayName}
+                                </div>
+                                <div className="text-[11px] text-[#52586e] truncate">
+                                  {req.email}
+                                </div>
+                              </div>
+                              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold shrink-0">
+                                Minta Edit
+                              </span>
+                            </div>
+
+                            <div className="flex gap-2 pt-1">
+                              <button
+                                type="button"
+                                disabled={isSyncingCloud}
+                                onClick={() => handleApproveAccessRequest(req)}
+                                className="flex-1 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition cursor-pointer"
+                              >
+                                ✓ Terima (Izinkan Edit)
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSyncingCloud}
+                                onClick={() => handleRejectAccessRequest(req.email)}
+                                className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-[11px] font-bold transition cursor-pointer"
+                              >
+                                ✕ Tolak
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* SECTION 3: DAFTAR ANGGOTA TIM & IZIN AKSES */}
+                  <div className="p-4 rounded-2xl bg-[#f8f9fc] border border-[#cbd3e6] space-y-3">
+                    <div className="text-xs font-bold text-[#181b26]">
+                      3. Anggota Tim yang Memiliki Akses ({teamMembers.length})
+                    </div>
+
+                    <form onSubmit={handleAddTeamMemberPermission} className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={newMemberEmailInput}
+                        onChange={(e) => setNewMemberEmailInput(e.target.value)}
+                        placeholder="Tambah email/username tim..."
+                        className="flex-1 min-w-0 px-2.5 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                      />
+                      <select
+                        value={newMemberRoleInput}
+                        onChange={(e) =>
+                          setNewMemberRoleInput(e.target.value as TeamRolePermission)
+                        }
+                        className="px-2 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs font-semibold text-[#181b26]"
+                      >
+                        <option value="editor">Editor</option>
+                        <option value="viewer">Viewer</option>
+                      </select>
+                      <button
+                        type="submit"
+                        className="px-3 py-1.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold shrink-0 cursor-pointer"
+                      >
+                        + Tambah
+                      </button>
+                    </form>
+
+                    {teamMembers.length === 0 ? (
+                      <div className="text-[11px] text-[#6d7696] text-center py-1">
+                        Belum ada anggota tim terdaftar. Setujui permintaan akses di atas atau tambahkan email secara langsung.
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                        {teamMembers.map((mem) => (
+                          <div
+                            key={mem.email}
+                            className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white border border-[#dce3f2] text-xs"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="font-bold text-[#181b26] truncate">
+                                {mem.displayName || mem.email}
+                              </div>
+                              <div className="text-[10px] text-[#52586e] truncate">
+                                {mem.email}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <select
+                                value={mem.role}
+                                onChange={(e) =>
+                                  handleUpdateTeamMemberRole(
+                                    mem.email,
+                                    e.target.value as TeamRolePermission
+                                  )
+                                }
+                                className={`px-2 py-1 rounded-lg text-[11px] font-bold border ${
+                                  mem.role === 'editor'
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                    : 'bg-amber-50 text-amber-800 border-amber-300'
+                                }`}
+                              >
+                                <option value="editor">Editor (Bisa Edit)</option>
+                                <option value="viewer">Viewer (Hanya Lihat)</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveTeamMemberPermission(mem.email)}
+                                className="w-6 h-6 rounded-lg hover:bg-rose-50 text-rose-600 font-bold flex items-center justify-center cursor-pointer"
+                                title="Cabut akses anggota"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
