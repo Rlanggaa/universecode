@@ -276,8 +276,11 @@ export default function App() {
   const [shareLinkAccessMode, setShareLinkAccessMode] = useState<'editor' | 'viewer'>('viewer');
   const [shareLinkCopied, setShareLinkCopied] = useState<boolean>(false);
 
-  // Detect Canva-style Shared World Link (?world=...&token=...&access=editor|viewer&owner=...)
-  const [sharedWorldLink, setSharedWorldLink] = useState<SharedWorldLinkSession | null>(() => {
+  const ownerVaultProfileRef = useRef<CloudWorkspaceBundle['userProfile'] | undefined>(
+    undefined
+  );
+
+  const readStoredSharedWorldLink = (): SharedWorldLinkSession | null => {
     try {
       const params = new URLSearchParams(window.location.search);
       const worldVault = params.get('world')?.trim();
@@ -305,7 +308,12 @@ export default function App() {
       // ignore URL or storage errors
     }
     return null;
-  });
+  };
+
+  // Detect Canva-style Shared World Link (?world=...&token=...&access=editor|viewer&owner=...)
+  const [sharedWorldLink, setSharedWorldLink] = useState<SharedWorldLinkSession | null>(() =>
+    readStoredSharedWorldLink()
+  );
 
   const activeAccount: CloudAccountSession | null = useMemo(() => {
     if (cloudAccount) return cloudAccount;
@@ -926,11 +934,14 @@ export default function App() {
       setAccessRequests(bundle.accessRequests as CloudAccessRequest[]);
     }
 
-    if (bundle.userProfile && !preservePersonalProfile && !activeAccount?.joinedWorldVaultId) {
-      setProfileDisplayName(bundle.userProfile.displayName || '');
-      setProfileRoleTitle(bundle.userProfile.roleTitle || 'Worldbuilder & Storyteller');
-      setProfileBio(bundle.userProfile.bio || '');
-      setProfileAvatarUrl(bundle.userProfile.avatarUrl || '');
+    if (bundle.userProfile) {
+      ownerVaultProfileRef.current = bundle.userProfile;
+      if (!preservePersonalProfile && !activeAccount?.joinedWorldVaultId) {
+        setProfileDisplayName(bundle.userProfile.displayName || '');
+        setProfileRoleTitle(bundle.userProfile.roleTitle || 'Worldbuilder & Storyteller');
+        setProfileBio(bundle.userProfile.bio || '');
+        setProfileAvatarUrl(bundle.userProfile.avatarUrl || '');
+      }
     }
 
     try {
@@ -947,7 +958,7 @@ export default function App() {
     setHistoryRevision((r) => r + 1);
     window.setTimeout(() => {
       isHydratingCloudRef.current = false;
-    }, 220);
+    }, 80);
   };
 
   const createEmptyWorkspaceBundle = (): CloudWorkspaceBundle => ({
@@ -1041,6 +1052,13 @@ export default function App() {
       mergedArticles = [syncedStoryArticle, ...nonStory];
     }
 
+    const isEditingSharedVault = Boolean(
+      (sharedWorldLink &&
+        sharedWorldLink.vaultKey &&
+        sharedWorldLink.vaultKey !== acct?.emailLookupId) ||
+        (acct?.joinedWorldVaultId && acct.joinedWorldVaultId !== acct?.emailLookupId)
+    );
+
     const stateBundle: CloudWorkspaceBundle = {
       worlds: worlds.slice(0, 1),
       activeWorldId: worlds[0]?.id || activeWorldId,
@@ -1057,18 +1075,20 @@ export default function App() {
       recentlyEdited,
       timelineStudioRaw: localStorage.getItem(LOCAL_TIMELINES_STORAGE_KEY),
       relationshipStudioRaw: localStorage.getItem(LOCAL_RELATIONSHIP_STUDIO_KEY),
-      userProfile: acct
+      userProfile: isEditingSharedVault
+        ? ownerVaultProfileRef.current
+        : acct
         ? {
             displayName: acct.displayName || profileDisplayName || 'Creator',
             roleTitle: acct.roleTitle ?? profileRoleTitle ?? 'Worldbuilder & Storyteller',
             bio: acct.bio ?? profileBio ?? '',
             avatarUrl: acct.avatarUrl ?? profileAvatarUrl ?? ''
           }
-        : undefined,
+        : ownerVaultProfileRef.current,
       teamMembers: overrideTeamMembers ?? teamMembers,
       accessRequests: overrideAccessRequests ?? accessRequests,
       lastEditorSessionId: clientSessionIdRef.current,
-      lastEditorName: acct?.displayName || profileDisplayName || 'Creator',
+      lastEditorName: acct?.displayName || profileDisplayName || 'Anggota Tim (Editor)',
       lastEditorEmail: acct?.email || '',
       updatedAtIso: nowIso
     };
@@ -1090,7 +1110,7 @@ export default function App() {
               accessRequests:
                 overrideAccessRequests ?? (parsed.accessRequests as CloudAccessRequest[]) ?? [],
               lastEditorSessionId: clientSessionIdRef.current,
-              lastEditorName: acct?.displayName || 'Creator',
+              lastEditorName: acct?.displayName || 'Anggota Tim (Editor)',
               lastEditorEmail: acct?.email || '',
               updatedAtIso: nowIso
             };
@@ -1115,17 +1135,17 @@ export default function App() {
     account?: CloudAccountSession | null
   ): Promise<{ vaultKey: string; passwordToken: string; isJoinedSharedWorld: boolean }> => {
     const ownKey = account ? await resolveEmailLookupKey(account) : '';
+    const currentShareLink = sharedWorldLink || readStoredSharedWorldLink();
 
     // 1. Check active Canva-style Shared World Link first (unless the logged-in user IS the owner of that vault)
     if (
-      sharedWorldLink &&
-      sharedWorldLink.vaultKey &&
-      sharedWorldLink.passwordToken &&
-      sharedWorldLink.vaultKey !== ownKey
+      currentShareLink &&
+      currentShareLink.vaultKey &&
+      currentShareLink.vaultKey !== ownKey
     ) {
       return {
-        vaultKey: sharedWorldLink.vaultKey,
-        passwordToken: sharedWorldLink.passwordToken,
+        vaultKey: currentShareLink.vaultKey,
+        passwordToken: currentShareLink.passwordToken || 'shared-vault-token',
         isJoinedSharedWorld: true
       };
     }
@@ -1133,12 +1153,11 @@ export default function App() {
     // 2. Check account's saved joinedWorldVaultId
     if (
       account?.joinedWorldVaultId &&
-      account?.joinedWorldPin &&
       account.joinedWorldVaultId !== ownKey
     ) {
       return {
         vaultKey: account.joinedWorldVaultId,
-        passwordToken: account.joinedWorldPin,
+        passwordToken: account.joinedWorldPin || 'shared-vault-token',
         isJoinedSharedWorld: true
       };
     }
@@ -1153,21 +1172,22 @@ export default function App() {
 
   // Determine whether the workspace is currently connected to someone else's Shared World Link
   const activeSharedWorldInfo = useMemo(() => {
-    if (sharedWorldLink && sharedWorldLink.vaultKey) {
+    const currentLink = sharedWorldLink || readStoredSharedWorldLink();
+    if (currentLink && currentLink.vaultKey) {
       if (
         activeAccount?.emailLookupId &&
-        activeAccount.emailLookupId === sharedWorldLink.vaultKey
+        activeAccount.emailLookupId === currentLink.vaultKey
       ) {
         return null;
       }
       return {
-        vaultKey: sharedWorldLink.vaultKey,
-        passwordToken: sharedWorldLink.passwordToken,
-        ownerName: sharedWorldLink.ownerName || 'Pemilik World',
-        accessMode: sharedWorldLink.accessMode || 'editor'
+        vaultKey: currentLink.vaultKey,
+        passwordToken: currentLink.passwordToken || 'shared-vault-token',
+        ownerName: currentLink.ownerName || 'Pemilik World',
+        accessMode: currentLink.accessMode || 'editor'
       };
     }
-    if (activeAccount?.joinedWorldVaultId && activeAccount?.joinedWorldPin) {
+    if (activeAccount?.joinedWorldVaultId) {
       if (
         activeAccount.emailLookupId &&
         activeAccount.emailLookupId === activeAccount.joinedWorldVaultId
@@ -1176,7 +1196,7 @@ export default function App() {
       }
       return {
         vaultKey: activeAccount.joinedWorldVaultId,
-        passwordToken: activeAccount.joinedWorldPin,
+        passwordToken: activeAccount.joinedWorldPin || 'shared-vault-token',
         ownerName: activeAccount.joinedWorldOwnerName || 'Pemilik World',
         accessMode: activeAccount.joinedWorldAccessMode || 'editor'
       };
@@ -1478,11 +1498,20 @@ export default function App() {
       }
 
       const cloudProfile = cloudBundle?.userProfile;
+      const currentShareLink = sharedWorldLink || readStoredSharedWorldLink();
+      const targetSharedVaultKey =
+        currentShareLink?.vaultKey || account.joinedWorldVaultId || '';
+      const targetSharedToken =
+        currentShareLink?.passwordToken || account.joinedWorldPin || 'shared-vault-token';
+      const targetSharedOwnerName =
+        currentShareLink?.ownerName || account.joinedWorldOwnerName || 'Pemilik World';
+      const targetSharedAccessMode =
+        currentShareLink?.accessMode || account.joinedWorldAccessMode || 'viewer';
+
       const isJoiningViaShareLink = Boolean(
-        sharedWorldLink &&
-          sharedWorldLink.vaultKey &&
-          sharedWorldLink.vaultKey !== emailLookupKey
+        targetSharedVaultKey && targetSharedVaultKey !== emailLookupKey
       );
+
       const updatedSession: CloudAccountSession = {
         ...account,
         uid: effectiveUid,
@@ -1491,18 +1520,10 @@ export default function App() {
         roleTitle: cloudProfile?.roleTitle || account.roleTitle || 'Worldbuilder & Storyteller',
         bio: cloudProfile?.bio || account.bio || '',
         avatarUrl: cloudProfile?.avatarUrl || account.avatarUrl || '',
-        joinedWorldVaultId: isJoiningViaShareLink
-          ? sharedWorldLink?.vaultKey
-          : account.joinedWorldVaultId,
-        joinedWorldPin: isJoiningViaShareLink
-          ? sharedWorldLink?.passwordToken
-          : account.joinedWorldPin,
-        joinedWorldOwnerName: isJoiningViaShareLink
-          ? sharedWorldLink?.ownerName
-          : account.joinedWorldOwnerName,
-        joinedWorldAccessMode: isJoiningViaShareLink
-          ? sharedWorldLink?.accessMode
-          : account.joinedWorldAccessMode
+        joinedWorldVaultId: isJoiningViaShareLink ? targetSharedVaultKey : undefined,
+        joinedWorldPin: isJoiningViaShareLink ? targetSharedToken : undefined,
+        joinedWorldOwnerName: isJoiningViaShareLink ? targetSharedOwnerName : undefined,
+        joinedWorldAccessMode: isJoiningViaShareLink ? targetSharedAccessMode : undefined
       };
       setCloudAccount(updatedSession);
       try {
@@ -1513,17 +1534,18 @@ export default function App() {
 
       // If the user opened a Canva-style Share Link (?world=...&token=...) and then logged into their own personal account,
       // keep the shared World loaded in their workspace while using their personal profile identity!
-      if (isJoiningViaShareLink && sharedWorldLink) {
+      if (isJoiningViaShareLink) {
         const sharedRes = await loadCloudAccountVaultFromFirestore(
-          sharedWorldLink.vaultKey,
-          sharedWorldLink.passwordToken
+          targetSharedVaultKey,
+          targetSharedToken,
+          true
         );
         if (sharedRes.status === 'ok' && sharedRes.bundle) {
           hydrateFromCloudBundle(sharedRes.bundle, true);
         }
         setBackupStatus('Live Team World Synced');
         setAuthStatusMessage(
-          `Berhasil masuk sebagai ${updatedSession.displayName}! Anda kini berkolaborasi secara Real-Time di World milik "${sharedWorldLink.ownerName}".`
+          `Berhasil masuk sebagai ${updatedSession.displayName}! Anda kini berkolaborasi secara Real-Time di World milik "${targetSharedOwnerName}".`
         );
         return true;
       }
@@ -1684,16 +1706,37 @@ export default function App() {
         }
         const emailStr = (user.email || user.uid).toLowerCase();
         const emailLookupId = await deriveEmailLookupId(emailStr);
+        const storedLink = readStoredSharedWorldLink();
+        let savedSession: Partial<CloudAccountSession> = {};
+        try {
+          const rawSaved = localStorage.getItem(CLOUD_ACCOUNT_SESSION_KEY);
+          if (rawSaved) {
+            savedSession = JSON.parse(rawSaved) as Partial<CloudAccountSession>;
+          }
+        } catch {
+          // ignore
+        }
+
         const googleAcct: CloudAccountSession = {
           uid: user.uid,
           emailLookupId,
           email: user.email || '',
           displayName:
-            user.displayName || (user.email ? user.email.split('@')[0] : 'Creator'),
-          roleTitle: 'Worldbuilder & Storyteller',
-          bio: '',
-          avatarUrl: user.photoURL || '',
-          authMethod: 'google'
+            savedSession.email?.toLowerCase() === emailStr && savedSession.displayName
+              ? savedSession.displayName
+              : user.displayName || (user.email ? user.email.split('@')[0] : 'Creator'),
+          roleTitle: savedSession.roleTitle || 'Worldbuilder & Storyteller',
+          bio: savedSession.bio || '',
+          avatarUrl: savedSession.avatarUrl || user.photoURL || '',
+          authMethod: 'google',
+          joinedWorldVaultId:
+            storedLink?.vaultKey || savedSession.joinedWorldVaultId,
+          joinedWorldPin:
+            storedLink?.passwordToken || savedSession.joinedWorldPin,
+          joinedWorldOwnerName:
+            storedLink?.ownerName || savedSession.joinedWorldOwnerName,
+          joinedWorldAccessMode:
+            storedLink?.accessMode || savedSession.joinedWorldAccessMode
         };
         await syncAccountWorkspaceOnLogin(googleAcct, user, false, 'session-restore');
       }
@@ -1715,32 +1758,34 @@ export default function App() {
   // INITIAL LOAD FOR CANVA-STYLE SHARE WORLD LINK:
   // When a team member opens a shared link (?world=...&token=...), immediately load the Owner's World from Cloud
   useEffect(() => {
-    if (!sharedWorldLink?.vaultKey || !sharedWorldLink?.passwordToken) return;
+    const activeLink = sharedWorldLink || readStoredSharedWorldLink();
+    if (!activeLink?.vaultKey) return;
     let isCancelled = false;
 
     const loadSharedWorldFromLink = async () => {
       // Check if the currently logged-in user IS the owner of this link
       if (activeAccount) {
         const ownKey = await resolveEmailLookupKey(activeAccount);
-        if (ownKey === sharedWorldLink.vaultKey) {
+        if (ownKey === activeLink.vaultKey) {
           return;
         }
       }
       setIsSyncingCloud(true);
       try {
         const vaultRes = await loadCloudAccountVaultFromFirestore(
-          sharedWorldLink.vaultKey,
-          sharedWorldLink.passwordToken
+          activeLink.vaultKey,
+          activeLink.passwordToken || 'shared-vault-token',
+          true
         );
         if (isCancelled) return;
         if (vaultRes.status === 'ok' && vaultRes.bundle) {
           hydrateFromCloudBundle(vaultRes.bundle, true);
           const ownerLabel =
-            vaultRes.displayName || sharedWorldLink.ownerName || 'Pemilik World';
+            vaultRes.displayName || activeLink.ownerName || 'Pemilik World';
           setBackupStatus(`Live Team World (${ownerLabel})`);
           setLiveCollaboratorNotice(
             `Terhubung ke link World milik ${ownerLabel} (${
-              sharedWorldLink.accessMode === 'viewer' ? 'Hanya Lihat' : 'Bisa Edit Real-Time'
+              activeLink.accessMode === 'viewer' ? 'Hanya Lihat' : 'Bisa Edit Real-Time'
             })`
           );
         }
@@ -1759,18 +1804,19 @@ export default function App() {
   // REAL-TIME LISTENER (Firestore onSnapshot):
   // Immediately receives & applies edits made by team members on other browsers/devices in < 1 second
   useEffect(() => {
-    if (!activeAccount && !sharedWorldLink) return;
+    const activeLink = sharedWorldLink || readStoredSharedWorldLink();
+    if (!activeAccount && !activeLink) return;
     let unsubVault: (() => void) | null = null;
     let isCancelled = false;
 
     const attachRealtimeListener = async () => {
       const { vaultKey, passwordToken, isJoinedSharedWorld } =
         await resolveTargetVaultCredentials(activeAccount);
-      if (isCancelled || !vaultKey || !passwordToken) return;
+      if (isCancelled || !vaultKey) return;
 
       unsubVault = subscribeCloudAccountVault(
         vaultKey,
-        passwordToken,
+        passwordToken || 'shared-vault-token',
         (remoteBundle) => {
           // Ignore our own echo from this browser tab
           if (
@@ -1816,7 +1862,12 @@ export default function App() {
 
   // Automatically sync workspace changes to Cloud (CloudAccountVault + Supabase + Firestore) whenever Owner or Team Editor edits data
   useEffect(() => {
-    if ((!activeAccount && !sharedWorldLink) || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) {
+    const activeLink = sharedWorldLink || readStoredSharedWorldLink();
+    if (
+      (!activeAccount && !activeLink) ||
+      !isInitialLoadDoneRef.current ||
+      isHydratingCloudRef.current
+    ) {
       return;
     }
     // If joined as Viewer (read-only), do not overwrite the shared Cloud Vault
@@ -1829,7 +1880,7 @@ export default function App() {
 
       const { vaultKey, passwordToken, isJoinedSharedWorld } =
         await resolveTargetVaultCredentials(activeAccount);
-      if (!vaultKey || !passwordToken) return;
+      if (!vaultKey) return;
 
       const ownerOrEditorDisplayName = isJoinedSharedWorld
         ? activeSharedWorldInfo?.ownerName || activeAccount?.displayName || 'Shared World'
@@ -1837,7 +1888,7 @@ export default function App() {
 
       const vaultRes = await saveCloudAccountVaultToFirestore(
         vaultKey,
-        passwordToken,
+        passwordToken || 'shared-vault-token',
         ownerOrEditorDisplayName,
         bundle
       );
@@ -1853,7 +1904,7 @@ export default function App() {
       if (currentUser && !isJoinedSharedWorld) {
         await saveWorkspaceBundleToFirestore(currentUser, bundle);
       }
-    }, 600);
+    }, 350);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -1877,7 +1928,6 @@ export default function App() {
     notes,
     tasks,
     digitalAssets,
-    recentlyOpened,
     recentlyEdited,
     teamMembers,
     accessRequests,
@@ -2401,9 +2451,12 @@ export default function App() {
   };
 
   const handleManualCloudPush = async () => {
-    if (!activeAccount) return;
+    if (!activeAccount && !activeSharedWorldInfo) return;
     if (currentUserTeamRole === 'viewer') {
       setAuthErrorMessage(
+        'Akun Anda memiliki izin "Viewer (Hanya Baca)" pada World ini sehingga tidak dapat menimpa data Cloud.'
+      );
+      setShareErrorMessage(
         'Akun Anda memiliki izin "Viewer (Hanya Baca)" pada World ini sehingga tidak dapat menimpa data Cloud.'
       );
       return;
@@ -2411,32 +2464,35 @@ export default function App() {
     setIsSyncingCloud(true);
     setAuthErrorMessage('');
     setAuthStatusMessage('');
+    setShareErrorMessage('');
+    setShareStatusMessage('');
     try {
       const bundle = buildCurrentWorkspaceBundle();
       lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
       const { vaultKey, passwordToken, isJoinedSharedWorld } =
         await resolveTargetVaultCredentials(activeAccount);
+      if (!vaultKey) return;
 
       const vaultRes = await saveCloudAccountVaultToFirestore(
         vaultKey,
-        passwordToken,
+        passwordToken || 'shared-vault-token',
         isJoinedSharedWorld
-          ? activeAccount.joinedWorldOwnerName || activeAccount.displayName
-          : activeAccount.displayName,
+          ? activeSharedWorldInfo?.ownerName || activeAccount?.displayName || 'Shared World'
+          : activeAccount?.displayName || 'Creator',
         bundle
       );
 
       if (!vaultRes.ok) {
-        setAuthErrorMessage(
-          vaultRes.error || 'Gagal menyimpan ke Cloud Database.'
-        );
+        const errMsg = vaultRes.error || 'Gagal menyimpan ke Cloud Database.';
+        setAuthErrorMessage(errMsg);
+        setShareErrorMessage(errMsg);
         return;
       }
 
       if (isSupabaseConfigured()) {
         await saveWorkspaceBundleToSupabase(
           vaultKey,
-          activeAccount.email,
+          activeAccount?.email || '',
           bundle
         );
       }
@@ -2446,30 +2502,38 @@ export default function App() {
       setBackupStatus(
         isJoinedSharedWorld ? 'Live Team World Synced' : 'Cloud Database Synced'
       );
-      setAuthStatusMessage('Seluruh data workspace berhasil disimpan & disiarkan secara Real-Time ke tim!');
+      const okMsg =
+        'Seluruh data workspace berhasil disimpan & disiarkan secara Real-Time ke Cloud!';
+      setAuthStatusMessage(okMsg);
+      setShareStatusMessage(okMsg);
     } finally {
       setIsSyncingCloud(false);
     }
   };
 
   const handleManualCloudPull = async () => {
-    if (!activeAccount) return;
+    if (!activeAccount && !activeSharedWorldInfo) return;
     setIsSyncingCloud(true);
     setAuthErrorMessage('');
     setAuthStatusMessage('');
+    setShareErrorMessage('');
+    setShareStatusMessage('');
     try {
       const { vaultKey, passwordToken, isJoinedSharedWorld } =
         await resolveTargetVaultCredentials(activeAccount);
+      if (!vaultKey) return;
       let bundle: CloudWorkspaceBundle | null = null;
 
       const vaultRes = await loadCloudAccountVaultFromFirestore(
         vaultKey,
-        passwordToken
+        passwordToken || 'shared-vault-token',
+        isJoinedSharedWorld || Boolean(currentUser)
       );
       if (vaultRes.status === 'wrong_password') {
-        setAuthErrorMessage(
-          vaultRes.error || 'Password/PIN tidak sesuai dengan data di Cloud.'
-        );
+        const errMsg =
+          vaultRes.error || 'Password/PIN tidak sesuai dengan data di Cloud.';
+        setAuthErrorMessage(errMsg);
+        setShareErrorMessage(errMsg);
         return;
       }
       if (vaultRes.bundle) {
@@ -2491,15 +2555,19 @@ export default function App() {
         setBackupStatus(
           isJoinedSharedWorld ? 'Live Team World Synced' : 'Cloud Database Synced'
         );
-        setAuthStatusMessage('Data terbaru dari Cloud berhasil dimuat ke browser ini!');
+        const okMsg = 'Data terbaru dari Cloud berhasil dimuat ke browser ini!';
+        setAuthStatusMessage(okMsg);
+        setShareStatusMessage(okMsg);
       } else if (vaultRes.status === 'ok') {
-        setAuthStatusMessage(
-          'Akun sudah terhubung ke Cloud, namun belum ada World/Story yang disimpan di dalam workspace ini.'
-        );
+        const emptyMsg =
+          'Akun sudah terhubung ke Cloud, namun belum ada World/Story yang disimpan di dalam workspace ini.';
+        setAuthStatusMessage(emptyMsg);
+        setShareStatusMessage(emptyMsg);
       } else {
-        setAuthErrorMessage(
-          'Belum ada data di Cloud untuk akun ini. Klik "Simpan ke Cloud" terlebih dahulu pada browser tempat Anda membuat data.'
-        );
+        const notFoundMsg =
+          'Belum ada data di Cloud untuk akun ini. Klik "Simpan ke Cloud" terlebih dahulu pada browser tempat Anda membuat data.';
+        setAuthErrorMessage(notFoundMsg);
+        setShareErrorMessage(notFoundMsg);
       }
     } finally {
       setIsSyncingCloud(false);
@@ -6278,8 +6346,30 @@ export default function App() {
                         </button>
                       </div>
                     ) : (
-                      <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900 font-medium leading-relaxed">
-                        ✅ Akun Anda memiliki akses <strong>Editor</strong>. Seluruh perubahan yang Anda tulis pada World, Story, Character, dan Peta otomatis tersimpan secara real-time ke Cloud!
+                      <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 space-y-2.5 text-[11px] text-emerald-900 font-medium leading-relaxed">
+                        <div>
+                          ✅ Akun Anda memiliki akses <strong>Editor</strong>. Seluruh perubahan yang Anda tulis pada World, Story, Character, dan Peta otomatis tersimpan secara real-time ke Cloud milik <strong>{activeSharedWorldInfo.ownerName}</strong>!
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={isSyncingCloud}
+                            onClick={handleManualCloudPush}
+                            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition disabled:opacity-50 cursor-pointer"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>{isSyncingCloud ? 'Menyimpan...' : 'Simpan ke Cloud'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isSyncingCloud}
+                            onClick={handleManualCloudPull}
+                            className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 text-xs font-bold transition disabled:opacity-50 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>{isSyncingCloud ? 'Memuat...' : 'Muat dari Cloud'}</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>

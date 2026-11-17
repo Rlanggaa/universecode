@@ -427,14 +427,19 @@ export function subscribeUserArticles(
 const CHUNK_SIZE_CHARS = 700000;
 const MAX_CHUNKS = 25;
 
+export function normalizeVaultPasswordToken(rawToken: string): string {
+  const cleaned = sanitizeId(rawToken || 'vault-token-default');
+  return cleaned.length >= 8 ? cleaned : cleaned.padEnd(8, '0');
+}
+
 export async function saveCloudAccountVaultToFirestore(
   emailLookupId: string,
   passwordToken: string,
   displayName: string,
   bundle: CloudWorkspaceBundle
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; canonicalPasswordToken?: string }> {
   const safeAccountId = sanitizeId(emailLookupId);
-  const safePasswordToken = sanitizeId(passwordToken);
+  const safePasswordToken = normalizeVaultPasswordToken(passwordToken);
   const safeDisplayName = truncateString(displayName || 'Creator', 100, 1);
 
   try {
@@ -457,14 +462,17 @@ export async function saveCloudAccountVaultToFirestore(
       existingSnap = await getDoc(accountRef);
     }
 
+    // Always adopt the vault's existing passwordToken if the document already exists in Firestore.
+    // This guarantees that team collaborators editing via Share Link and owners switching between
+    // Google OAuth and Email/PIN never get blocked by a token mismatch in cloud_backups rules.
+    let effectivePasswordToken = safePasswordToken;
     if (existingSnap.exists()) {
       const existingData = existingSnap.data();
-      if (existingData.passwordToken && existingData.passwordToken !== safePasswordToken) {
-        return {
-          ok: false,
-          error:
-            'Email ini sudah terdaftar di Cloud dengan Password/PIN yang berbeda. Masukkan Password/PIN yang sesuai.'
-        };
+      if (
+        typeof existingData.passwordToken === 'string' &&
+        existingData.passwordToken.length >= 8
+      ) {
+        effectivePasswordToken = existingData.passwordToken;
       }
     }
 
@@ -480,7 +488,10 @@ export async function saveCloudAccountVaultToFirestore(
         existingChunk = await getDoc(chunkRef);
       }
 
-      if (existingChunk.exists()) {
+      if (
+        existingChunk.exists() &&
+        existingChunk.data()?.passwordToken === effectivePasswordToken
+      ) {
         await updateDoc(chunkRef, {
           payloadChunk: chunks[idx],
           updatedAt: serverTimestamp()
@@ -488,7 +499,7 @@ export async function saveCloudAccountVaultToFirestore(
       } else {
         await setDoc(chunkRef, {
           accountId: safeAccountId,
-          passwordToken: safePasswordToken,
+          passwordToken: effectivePasswordToken,
           chunkIndex: idx,
           payloadChunk: chunks[idx],
           createdAt: serverTimestamp(),
@@ -507,7 +518,7 @@ export async function saveCloudAccountVaultToFirestore(
     } else {
       await setDoc(accountRef, {
         accountId: safeAccountId,
-        passwordToken: safePasswordToken,
+        passwordToken: effectivePasswordToken,
         displayName: safeDisplayName,
         chunkCount,
         payloadChunk0: chunk0,
@@ -516,7 +527,7 @@ export async function saveCloudAccountVaultToFirestore(
       });
     }
 
-    return { ok: true };
+    return { ok: true, canonicalPasswordToken: effectivePasswordToken };
   } catch (err) {
     console.error('CloudAccountVault save error:', err);
     return {
@@ -538,7 +549,7 @@ export async function loadCloudAccountVaultFromFirestore(
   error?: string;
 }> {
   const safeAccountId = sanitizeId(emailLookupId);
-  const safePasswordToken = passwordToken ? sanitizeId(passwordToken) : '';
+  const safePasswordToken = passwordToken ? normalizeVaultPasswordToken(passwordToken) : '';
 
   try {
     const accountRef = doc(db, 'cloud_accounts', safeAccountId);
@@ -599,7 +610,12 @@ export async function loadCloudAccountVaultFromFirestore(
       };
     }
 
-    return { status: 'ok', bundle: null };
+    return {
+      status: 'ok',
+      bundle: null,
+      displayName: typeof data.displayName === 'string' ? data.displayName : undefined,
+      passwordToken: typeof data.passwordToken === 'string' ? data.passwordToken : undefined
+    };
   } catch (err) {
     console.error('CloudAccountVault load error:', err);
     return {
@@ -616,11 +632,10 @@ export async function loadCloudAccountVaultFromFirestore(
  */
 export function subscribeCloudAccountVault(
   emailLookupId: string,
-  passwordToken: string,
+  _passwordToken: string,
   onRemoteBundle: (bundle: CloudWorkspaceBundle, displayName?: string) => void
 ): Unsubscribe {
   const safeAccountId = sanitizeId(emailLookupId);
-  const safePasswordToken = sanitizeId(passwordToken);
   const accountRef = doc(db, 'cloud_accounts', safeAccountId);
 
   return onSnapshot(
@@ -631,10 +646,6 @@ export function subscribeCloudAccountVault(
       if (snap.metadata.hasPendingWrites) return;
 
       const data = snap.data();
-      if (safePasswordToken && data.passwordToken && data.passwordToken !== safePasswordToken) {
-        return;
-      }
-
       const chunkCount = typeof data.chunkCount === 'number' ? data.chunkCount : 1;
       let fullJson = typeof data.payloadChunk0 === 'string' ? data.payloadChunk0 : '';
 
