@@ -788,6 +788,7 @@ export default function App() {
   };
 
   const handleGlobalUndo = () => {
+    if (currentUserTeamRole === 'viewer') return;
     if (undoStackRef.current.length === 0) return;
     const currentSnap: GlobalWorkspaceSnapshot = {
       worlds,
@@ -820,6 +821,7 @@ export default function App() {
   };
 
   const handleGlobalRedo = () => {
+    if (currentUserTeamRole === 'viewer') return;
     if (redoStackRef.current.length === 0) return;
     const currentSnap: GlobalWorkspaceSnapshot = {
       worlds,
@@ -854,6 +856,7 @@ export default function App() {
   // Universal Keyboard Listener for Undo (Ctrl+Z) & Redo (Ctrl+Shift+Z / Ctrl+Y) everywhere
   useEffect(() => {
     const onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (currentUserTeamRole === 'viewer') return;
       if (!(e.ctrlKey || e.metaKey)) return;
       const key = e.key.toLowerCase();
       if (key === 'z') {
@@ -1210,6 +1213,184 @@ export default function App() {
     const cleanEmail = activeAccount.email.trim().toLowerCase();
     return accessRequests.find((r) => r.email.trim().toLowerCase() === cleanEmail) || null;
   }, [activeAccount?.email, accessRequests]);
+
+  // Strict Read-Only Flag & Notification Helper for Viewer Role
+  const isReadOnlyViewer = currentUserTeamRole === 'viewer';
+
+  const notifyViewerReadOnly = () => {
+    setHistoryToastText('Mode Viewer (Hanya Lihat) — Klik "Bagikan / Akses Tim" untuk Minta Akses Edit');
+    window.setTimeout(() => {
+      setHistoryToastText('');
+    }, 3000);
+  };
+
+  const isAllowedViewerSearchInput = (el: HTMLElement | null): boolean => {
+    if (!el) return false;
+    if (el instanceof HTMLInputElement && el.type !== 'file') {
+      const hint = `${el.placeholder || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+      if (hint.includes('search') || hint.includes('cari')) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Capture-phase DOM guards on <main> so a Viewer cannot upload images, delete articles/items, or edit inputs inside any child studio
+  const handleViewerMainClickCapture = (e: React.MouseEvent<HTMLElement>) => {
+    if (!isReadOnlyViewer) return;
+    const rawTarget = e.target as HTMLElement | null;
+    if (!rawTarget) return;
+
+    if (rawTarget.closest('[data-allow-viewer="true"]')) {
+      return;
+    }
+
+    // 1. Block any click on <input type="file"> or a <label> wrapping a file input
+    if (rawTarget instanceof HTMLInputElement && rawTarget.type === 'file') {
+      e.preventDefault();
+      e.stopPropagation();
+      notifyViewerReadOnly();
+      return;
+    }
+    const closestLabel = rawTarget.closest('label');
+    if (closestLabel) {
+      const hasFileInput = Boolean(closestLabel.querySelector('input[type="file"]'));
+      const htmlForId = closestLabel.getAttribute('for');
+      const linkedInput = htmlForId ? document.getElementById(htmlForId) : null;
+      if (
+        hasFileInput ||
+        (linkedInput instanceof HTMLInputElement && linkedInput.type === 'file')
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        notifyViewerReadOnly();
+        return;
+      }
+    }
+
+    // 2. Inspect button or interactive trigger clicks
+    const btn = rawTarget.closest('button, [role="button"], label') as HTMLElement | null;
+    if (!btn) return;
+
+    if (btn.getAttribute('data-allow-viewer') === 'true') {
+      return;
+    }
+
+    if (btn instanceof HTMLButtonElement && btn.type === 'submit') {
+      e.preventDefault();
+      e.stopPropagation();
+      notifyViewerReadOnly();
+      return;
+    }
+
+    const labelText = (
+      `${btn.textContent || ''} ${btn.getAttribute('title') || ''} ${
+        btn.getAttribute('aria-label') || ''
+      }`
+    )
+      .trim()
+      .toLowerCase();
+
+    // Always allow read-only navigation, pagination, and fullscreen toggles
+    if (
+      /\b(read more|kembali|back|fullscreen|layar penuh|perkecil|keluar|halaman|prev|next|sebelumnya|berikutnya|daftar artikel|buka|lihat|zoom|reset view|fit|filter|semua)\b/i.test(
+        labelText
+      ) &&
+      !/\b(hapus|delete|tambah|buat|simpan|save|upload|unggah|edit|ubah|reset to empty)\b/i.test(
+        labelText
+      )
+    ) {
+      return;
+    }
+
+    // Block buttons containing mutation icons (trash, plus, upload, image upload, save, edit/pencil)
+    const hasMutationIcon = Boolean(
+      btn.querySelector(
+        '.lucide-trash, .lucide-trash-2, .lucide-plus, .lucide-upload, .lucide-image-plus, .lucide-camera, .lucide-save, .lucide-edit, .lucide-edit-2, .lucide-edit-3, .lucide-pen, .lucide-pencil, .lucide-file-plus, .lucide-folder-plus, .lucide-user-plus'
+      )
+    );
+    if (hasMutationIcon) {
+      e.preventDefault();
+      e.stopPropagation();
+      notifyViewerReadOnly();
+      return;
+    }
+
+    // Block buttons whose text/title matches any create/edit/delete/upload/save action
+    const isMutationText =
+      /\b(hapus|delete|remove|buang|bersihkan|reset|clear|tambah|buat|create|new|add|upload|unggah|ganti|ubah|edit|simpan|save|import|sisipkan|insert|sampul|thumbnail|gambar baru|foto|pin baru|marker|cabang|relasi baru|event baru|node baru|bab baru|adegan baru|template baru)\b/i.test(
+        labelText
+      ) ||
+      btn.textContent?.trim() === '+' ||
+      (btn.textContent?.trim() === '✕' && !/tutup|close|cari|search/i.test(labelText)) ||
+      (btn.textContent?.trim() === '×' && !/tutup|close|cari|search/i.test(labelText));
+
+    if (isMutationText) {
+      e.preventDefault();
+      e.stopPropagation();
+      notifyViewerReadOnly();
+      return;
+    }
+  };
+
+  const handleViewerMainChangeCapture = (e: React.SyntheticEvent<HTMLElement>) => {
+    if (!isReadOnlyViewer) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (isAllowedViewerSearchInput(target)) return;
+
+    if (target instanceof HTMLInputElement && target.type === 'file') {
+      target.value = '';
+      e.preventDefault();
+      e.stopPropagation();
+      notifyViewerReadOnly();
+      return;
+    }
+
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target.isContentEditable
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      notifyViewerReadOnly();
+    }
+  };
+
+  const handleViewerMainKeyDownCapture = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (!isReadOnlyViewer) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    if (isAllowedViewerSearchInput(target)) return;
+
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target.isContentEditable
+    ) {
+      const allowedNavKeys = [
+        'ArrowUp',
+        'ArrowDown',
+        'ArrowLeft',
+        'ArrowRight',
+        'PageUp',
+        'PageDown',
+        'Home',
+        'End',
+        'Tab',
+        'Escape'
+      ];
+      if (allowedNavKeys.includes(e.key)) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      notifyViewerReadOnly();
+    }
+  };
 
   const syncAccountWorkspaceOnLogin = async (
     account: CloudAccountSession,
@@ -2435,6 +2616,10 @@ export default function App() {
 
   // Thumbnail Upload Handler for Page 6 World Creation Form
   const handleWorldThumbnailUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isReadOnlyViewer) {
+      notifyViewerReadOnly();
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -2449,6 +2634,10 @@ export default function App() {
   // Save Story Entry Handler (Single Story with Unlimited Pages)
   const handleSaveStoryEntry = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isReadOnlyViewer) {
+      notifyViewerReadOnly();
+      return;
+    }
     if (!storySynopsis.trim() && !storyText.trim() && !storyTitle.trim() && !storyPagesJson.trim()) return;
 
     const targetWorld = ensureActiveWorldForQuickCreate();
@@ -2544,7 +2733,13 @@ export default function App() {
 
   // Automatic real-time save for Single Paginated Story View
   useEffect(() => {
-    if (activeNav !== 'articles' || showStoryAdvancedWiki || isRestoringHistoryRef.current) return;
+    if (
+      isReadOnlyViewer ||
+      activeNav !== 'articles' ||
+      showStoryAdvancedWiki ||
+      isRestoringHistoryRef.current
+    )
+      return;
     const hasContent = Boolean(
       storyTitle.trim() || storySynopsis.trim() || storyText.trim() || storyPagesJson.trim()
     );
@@ -2647,6 +2842,10 @@ export default function App() {
   // Create World Handler (Page 6 Specification: Only World Name is required!)
   const handleCreateWorldFromForm = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (isReadOnlyViewer) {
+      notifyViewerReadOnly();
+      return;
+    }
     if (!formWorldName.trim()) return;
 
     const uniId = `uni-${Date.now()}`;
@@ -2837,6 +3036,10 @@ export default function App() {
     kind: 'world' | 'article' | 'character' | 'location' | 'map'
   ) => {
     setShowQuickCreateMenu(false);
+    if (isReadOnlyViewer) {
+      notifyViewerReadOnly();
+      return;
+    }
     if (kind === 'world') {
       setIsCreatingWorld(false);
       setSelectedArticleId(activeWorld?.id || worlds[0]?.id || '');
@@ -2930,6 +3133,10 @@ export default function App() {
 
   // Optional: Load Sample World ("Padepokan Astacala / Aethelgard") or Reset to Empty First-Time Experience
   const handleLoadSampleWorkspace = () => {
+    if (isReadOnlyViewer) {
+      notifyViewerReadOnly();
+      return;
+    }
     setUniverses(INITIAL_UNIVERSES);
     setWorlds(INITIAL_WORLDS);
     setActiveWorldId(INITIAL_WORLDS[0].id);
@@ -2990,6 +3197,10 @@ export default function App() {
   };
 
   const handleResetToEmptyFirstTimeState = () => {
+    if (isReadOnlyViewer) {
+      notifyViewerReadOnly();
+      return;
+    }
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     setUniverses([]);
     setWorlds([]);
@@ -3178,6 +3389,10 @@ export default function App() {
   };
 
   const handleImportFullWorkspaceJson = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isReadOnlyViewer) {
+      notifyViewerReadOnly();
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -3544,77 +3759,81 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleGlobalUndo}
-                disabled={undoCount === 0}
+                disabled={undoCount === 0 || isReadOnlyViewer}
                 className={`p-1 rounded-full transition-colors ${
-                  undoCount > 0
+                  undoCount > 0 && !isReadOnlyViewer
                     ? 'text-[#181b26] hover:bg-[#e6ecf7] cursor-pointer'
                     : 'text-[#b5bfd6] cursor-not-allowed'
                 }`}
-                title="Undo (Ctrl+Z)"
+                title={isReadOnlyViewer ? 'Mode Viewer (Hanya Lihat)' : 'Undo (Ctrl+Z)'}
               >
                 <Undo2 className="w-3.5 h-3.5" />
               </button>
               <button
                 type="button"
                 onClick={handleGlobalRedo}
-                disabled={redoCount === 0}
+                disabled={redoCount === 0 || isReadOnlyViewer}
                 className={`p-1 rounded-full transition-colors ${
-                  redoCount > 0
+                  redoCount > 0 && !isReadOnlyViewer
                     ? 'text-[#181b26] hover:bg-[#e6ecf7] cursor-pointer'
                     : 'text-[#b5bfd6] cursor-not-allowed'
                 }`}
-                title="Redo (Ctrl+Shift+Z)"
+                title={isReadOnlyViewer ? 'Mode Viewer (Hanya Lihat)' : 'Redo (Ctrl+Shift+Z)'}
               >
                 <Redo2 className="w-3.5 h-3.5" />
               </button>
               <span className="hidden md:inline-flex items-center gap-1 pl-1.5 pr-1 border-l border-[#dce3f2] text-[10px] font-semibold text-[#6d7696]">
                 <Check className="w-3 h-3 text-[#7792c4]" />
-                <span>{historyToastText || 'Auto-Save'}</span>
+                <span>
+                  {historyToastText || (isReadOnlyViewer ? 'Mode Hanya Lihat' : 'Auto-Save')}
+                </span>
               </span>
             </div>
 
-            {/* Header Quick Create Button (Without New Article) */}
-            <div className={activeNav === 'maps' || activeNav === 'timelines' ? 'hidden' : 'relative'}>
-              <button
-                type="button"
-                onClick={() => setShowQuickCreateMenu((prev) => !prev)}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold bg-[#6d7696] hover:bg-[#5d6685] border border-[#879fd0] text-white rounded-full shadow-[0_4px_14px_rgba(109,118,150,0.3)] transition-all whitespace-nowrap"
-              >
-                <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span className="hidden sm:inline">Quick Create</span>
-              </button>
-              {showQuickCreateMenu && (
-                <div className="absolute right-0 mt-2 w-48 bg-white border border-[#dce3f2] rounded-2xl shadow-2xl p-2 z-40 space-y-1">
-                  {[
-                    {
-                      id: 'world',
-                      label: worlds.length > 0 ? 'Edit World' : 'New World',
-                      icon: Globe
-                    },
-                    { id: 'character', label: 'New Character', icon: Users },
-                    { id: 'location', label: 'New Location', icon: MapPin },
-                    { id: 'map', label: 'New Map', icon: MapIcon }
-                  ].map((qc) => {
-                    const Icon = qc.icon;
-                    return (
-                      <button
-                        key={qc.id}
-                        type="button"
-                        onClick={() =>
-                          handleQuickCreateAction(
-                            qc.id as 'world' | 'article' | 'character' | 'location' | 'map'
-                          )
-                        }
-                        className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-[#181b26] hover:bg-[#6d7696] hover:text-white rounded-xl transition-colors"
-                      >
-                        <Icon className="w-3.5 h-3.5" />
-                        <span>{qc.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            {/* Header Quick Create Button (Hidden for Read-Only Viewers) */}
+            {!isReadOnlyViewer && (
+              <div className={activeNav === 'maps' || activeNav === 'timelines' ? 'hidden' : 'relative'}>
+                <button
+                  type="button"
+                  onClick={() => setShowQuickCreateMenu((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold bg-[#6d7696] hover:bg-[#5d6685] border border-[#879fd0] text-white rounded-full shadow-[0_4px_14px_rgba(109,118,150,0.3)] transition-all whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span className="hidden sm:inline">Quick Create</span>
+                </button>
+                {showQuickCreateMenu && (
+                  <div className="absolute right-0 mt-2 w-48 bg-white border border-[#dce3f2] rounded-2xl shadow-2xl p-2 z-40 space-y-1">
+                    {[
+                      {
+                        id: 'world',
+                        label: worlds.length > 0 ? 'Edit World' : 'New World',
+                        icon: Globe
+                      },
+                      { id: 'character', label: 'New Character', icon: Users },
+                      { id: 'location', label: 'New Location', icon: MapPin },
+                      { id: 'map', label: 'New Map', icon: MapIcon }
+                    ].map((qc) => {
+                      const Icon = qc.icon;
+                      return (
+                        <button
+                          key={qc.id}
+                          type="button"
+                          onClick={() =>
+                            handleQuickCreateAction(
+                              qc.id as 'world' | 'article' | 'character' | 'location' | 'map'
+                            )
+                          }
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-[#181b26] hover:bg-[#6d7696] hover:text-white rounded-xl transition-colors"
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                          <span>{qc.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Theme Mode Toggle Button (Mode Terang / Mode Gelap) */}
             <button
@@ -3807,6 +4026,13 @@ export default function App() {
         {/* MAIN VIEWPORT                                                      */}
         {/* ================================================================== */}
         <main
+          onClickCapture={handleViewerMainClickCapture}
+          onChangeCapture={handleViewerMainChangeCapture}
+          onInputCapture={handleViewerMainChangeCapture}
+          onPasteCapture={handleViewerMainChangeCapture}
+          onDropCapture={handleViewerMainChangeCapture}
+          onSubmitCapture={handleViewerMainChangeCapture}
+          onKeyDownCapture={handleViewerMainKeyDownCapture}
           className={`flex-1 p-6 sm:p-8 ${
             activeNav === 'characters' ||
             activeNav === 'locations' ||
@@ -3826,6 +4052,35 @@ export default function App() {
               : 'overflow-y-auto'
           }`}
         >
+          {/* Strict Read-Only Viewer Banner */}
+          {isReadOnlyViewer && activeSharedWorldInfo && (
+            <div className="max-w-6xl mx-auto mb-4 rounded-2xl bg-amber-50 border border-amber-300 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs text-amber-950 shadow-xs">
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-950 font-extrabold text-[10px] uppercase tracking-wider">
+                  Mode Viewer (Hanya Lihat)
+                </span>
+                <span>
+                  Anda sedang melihat World milik <strong>{activeSharedWorldInfo.ownerName}</strong>. Menambah gambar, menghapus artikel, dan mengedit konten dikunci.
+                </span>
+              </div>
+              <button
+                type="button"
+                data-allow-viewer="true"
+                onClick={() => {
+                  setShareErrorMessage('');
+                  setShareStatusMessage('');
+                  setShowAuthModal(false);
+                  setShowShareModal(true);
+                }}
+                className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] transition cursor-pointer shrink-0"
+              >
+                {myAccessRequest?.status === 'pending'
+                  ? 'Status Permintaan: Menunggu Owner'
+                  : 'Minta Akses Edit ke Owner'}
+              </button>
+            </div>
+          )}
+
           {/* ================================================================ */}
           {/* VIEW 1: DASHBOARD (Nocturnal Starlit Indigo Banner & 3 Columns)  */}
           {/* ================================================================ */}
@@ -4176,66 +4431,90 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Column 3: Quick Create (Exact 5-Tier Pill Palette from Reference Image) */}
+                {/* Column 3: Quick Create (Or Viewer Read-Only Card when in Viewer Mode) */}
                 <div className="rounded-[28px] bg-white border border-[#dce3f2] p-6 flex flex-col justify-between min-h-[340px] relative shadow-[0_12px_30px_rgba(115,139,189,0.14)]">
                   <div className="space-y-4">
                     <div className="flex items-center justify-between border-b border-[#e8edf7] pb-3">
                       <div className="flex items-center gap-2 text-lg font-bold text-[#181b26]">
-                        <span>Quick Create</span>
+                        <span>{isReadOnlyViewer ? 'Mode Akses Viewer' : 'Quick Create'}</span>
                       </div>
                       <Sparkles className="w-4 h-4 text-[#6d7696]" />
                     </div>
 
-                    <div className="space-y-3 pt-1">
-                      {[
-                        {
-                          id: 'world',
-                          label: worlds.length > 0 ? 'Edit World' : 'New World',
-                          iconSrc: '/assets/icons/world.png',
-                          pillClass:
-                            'bg-[#8da7db] hover:bg-[#7d98ce] border-[#8da7db] text-white shadow-[0_4px_12px_rgba(141,167,219,0.35)]'
-                        },
-                        {
-                          id: 'character',
-                          label: 'New Character',
-                          iconSrc: '/assets/icons/character.png',
-                          pillClass:
-                            'bg-[#6d7696] hover:bg-[#5d6685] border-[#6d7696] text-white shadow-[0_4px_12px_rgba(109,118,150,0.35)]'
-                        },
-                        {
-                          id: 'location',
-                          label: 'New Location',
-                          iconSrc: '/assets/icons/location.png',
-                          pillClass:
-                            'bg-[#494a52] hover:bg-[#383940] border-[#494a52] text-white shadow-[0_4px_12px_rgba(73,74,82,0.35)]'
-                        },
-                        {
-                          id: 'map',
-                          label: 'New Map',
-                          iconSrc: '/assets/icons/maps.png',
-                          pillClass:
-                            'bg-white hover:bg-[#f2f4f9] border-[#dce3f2] text-[#181b26] shadow-[0_4px_14px_rgba(115,139,189,0.18)]'
-                        }
-                      ].map((btn) => (
+                    {isReadOnlyViewer ? (
+                      <div className="py-6 px-3 text-center space-y-3">
+                        <div className="inline-flex items-center px-3 py-1 rounded-full bg-amber-100 text-amber-900 text-xs font-bold">
+                          Hanya Lihat (Read-Only)
+                        </div>
+                        <p className="text-xs text-[#52586e] leading-relaxed">
+                          Anda membuka World ini sebagai <strong>Viewer</strong>. Fitur pembuatan artikel, karakter, lokasi, tambah gambar, dan hapus konten dinonaktifkan.
+                        </p>
                         <button
-                          key={btn.id}
                           type="button"
-                          onClick={() =>
-                            handleQuickCreateAction(
-                              btn.id as 'world' | 'article' | 'character' | 'location' | 'map'
-                            )
-                          }
-                          className={`w-full py-2.5 px-4 rounded-full font-semibold text-xs flex items-center gap-3 transition-all border ${btn.pillClass}`}
+                          data-allow-viewer="true"
+                          onClick={() => {
+                            setShareErrorMessage('');
+                            setShareStatusMessage('');
+                            setShowAuthModal(false);
+                            setShowShareModal(true);
+                          }}
+                          className="w-full py-2.5 px-4 rounded-full bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
                         >
-                          <img
-                            src={btn.iconSrc}
-                            alt=""
-                            className="w-5 h-5 object-contain shrink-0"
-                          />
-                          <span>{btn.label}</span>
+                          Minta Akses Edit ke Owner
                         </button>
-                      ))}
-                    </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 pt-1">
+                        {[
+                          {
+                            id: 'world',
+                            label: worlds.length > 0 ? 'Edit World' : 'New World',
+                            iconSrc: '/assets/icons/world.png',
+                            pillClass:
+                              'bg-[#8da7db] hover:bg-[#7d98ce] border-[#8da7db] text-white shadow-[0_4px_12px_rgba(141,167,219,0.35)]'
+                          },
+                          {
+                            id: 'character',
+                            label: 'New Character',
+                            iconSrc: '/assets/icons/character.png',
+                            pillClass:
+                              'bg-[#6d7696] hover:bg-[#5d6685] border-[#6d7696] text-white shadow-[0_4px_12px_rgba(109,118,150,0.35)]'
+                          },
+                          {
+                            id: 'location',
+                            label: 'New Location',
+                            iconSrc: '/assets/icons/location.png',
+                            pillClass:
+                              'bg-[#494a52] hover:bg-[#383940] border-[#494a52] text-white shadow-[0_4px_12px_rgba(73,74,82,0.35)]'
+                          },
+                          {
+                            id: 'map',
+                            label: 'New Map',
+                            iconSrc: '/assets/icons/maps.png',
+                            pillClass:
+                              'bg-white hover:bg-[#f2f4f9] border-[#dce3f2] text-[#181b26] shadow-[0_4px_14px_rgba(115,139,189,0.18)]'
+                          }
+                        ].map((btn) => (
+                          <button
+                            key={btn.id}
+                            type="button"
+                            onClick={() =>
+                              handleQuickCreateAction(
+                                btn.id as 'world' | 'article' | 'character' | 'location' | 'map'
+                              )
+                            }
+                            className={`w-full py-2.5 px-4 rounded-full font-semibold text-xs flex items-center gap-3 transition-all border ${btn.pillClass}`}
+                          >
+                            <img
+                              src={btn.iconSrc}
+                              alt=""
+                              className="w-5 h-5 object-contain shrink-0"
+                            />
+                            <span>{btn.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -4318,13 +4597,13 @@ export default function App() {
           {activeNav === 'articles' && !showStoryAdvancedWiki && (
             <PaginatedStoryStudioView
               storyTitle={storyTitle}
-              setStoryTitle={setStoryTitle}
+              setStoryTitle={isReadOnlyViewer ? () => notifyViewerReadOnly() : setStoryTitle}
               storySynopsis={storySynopsis}
-              setStorySynopsis={setStorySynopsis}
+              setStorySynopsis={isReadOnlyViewer ? () => notifyViewerReadOnly() : setStorySynopsis}
               storyText={storyText}
-              setStoryText={setStoryText}
+              setStoryText={isReadOnlyViewer ? () => notifyViewerReadOnly() : setStoryText}
               storyPagesJson={storyPagesJson}
-              setStoryPagesJson={setStoryPagesJson}
+              setStoryPagesJson={isReadOnlyViewer ? () => notifyViewerReadOnly() : setStoryPagesJson}
               activeStoryId={activeStoryId}
               storySavedToast={storySavedToast}
               isStoryFullscreen={isStoryFullscreen}
@@ -4335,6 +4614,10 @@ export default function App() {
               }}
               onSaveStory={handleSaveStoryEntry}
               onStartNewStory={() => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 setActiveStoryId('');
                 setStoryTitle('');
                 setStorySynopsis('');
@@ -4383,6 +4666,10 @@ export default function App() {
                 }
               }}
               onSaveCharacter={async (charArt) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 const targetW = ensureActiveWorldForQuickCreate();
                 const finalChar: Article = { ...charArt, worldId: targetW.id };
                 setArticles((prev) =>
@@ -4415,6 +4702,33 @@ export default function App() {
                 }
               }}
               onCreateStubTagArticle={({ title, category, templateType, tagTypeLabel }) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return (
+                    articles[0] || {
+                      id: 'readonly-stub',
+                      worldId: safeActiveWorld.id,
+                      title,
+                      aliases: [],
+                      templateType,
+                      category,
+                      tags: [],
+                      summary: '',
+                      content: '',
+                      secretNotes: '',
+                      spoilerWarning: '',
+                      templateValues: {},
+                      status: 'draft',
+                      visibility: 'private',
+                      linkedEntityIds: [],
+                      galleryCaptions: [],
+                      versions: [],
+                      comments: [],
+                      wordCount: 0,
+                      updatedAt: ''
+                    }
+                  );
+                }
                 const targetW = ensureActiveWorldForQuickCreate();
                 const nowStamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
                 // NB Rule: Tag baru yang dibuat di sub kolom karakter hanya memuat judul;
@@ -4452,9 +4766,13 @@ export default function App() {
                 setArticles((prev) => [stubArt, ...prev]);
                 return stubArt;
               }}
-              onDeleteCharacter={(id) =>
-                setArticles((prev) => prev.filter((a) => a.id !== id))
-              }
+              onDeleteCharacter={(id) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
+                setArticles((prev) => prev.filter((a) => a.id !== id));
+              }}
               onJumpToTagArticle={(articleId, category) => {
                 setIsSidebarMinimized(true);
                 setSelectedArticleId(articleId);
@@ -4511,6 +4829,10 @@ export default function App() {
                 }
               }}
               onSaveLocation={async (locArt) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 const targetW = ensureActiveWorldForQuickCreate();
                 const finalLoc: Article = { ...locArt, worldId: targetW.id };
                 setArticles((prev) =>
@@ -4543,6 +4865,33 @@ export default function App() {
                 }
               }}
               onCreateStubTagArticle={({ title, category, templateType, tagTypeLabel }) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return (
+                    articles[0] || {
+                      id: 'readonly-stub',
+                      worldId: safeActiveWorld.id,
+                      title,
+                      aliases: [],
+                      templateType,
+                      category,
+                      tags: [],
+                      summary: '',
+                      content: '',
+                      secretNotes: '',
+                      spoilerWarning: '',
+                      templateValues: {},
+                      status: 'draft',
+                      visibility: 'private',
+                      linkedEntityIds: [],
+                      galleryCaptions: [],
+                      versions: [],
+                      comments: [],
+                      wordCount: 0,
+                      updatedAt: ''
+                    }
+                  );
+                }
                 const targetW = ensureActiveWorldForQuickCreate();
                 const nowStamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
                 const stubArt: Article = {
@@ -4578,9 +4927,13 @@ export default function App() {
                 setArticles((prev) => [stubArt, ...prev]);
                 return stubArt;
               }}
-              onDeleteLocation={(id) =>
-                setArticles((prev) => prev.filter((a) => a.id !== id))
-              }
+              onDeleteLocation={(id) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
+                setArticles((prev) => prev.filter((a) => a.id !== id));
+              }}
               onJumpToTagArticle={(articleId, category) => {
                 setIsSidebarMinimized(true);
                 setSelectedArticleId(articleId);
@@ -4682,6 +5035,10 @@ export default function App() {
                 }
               }}
               onSaveEntity={async (entityArt) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 const thumbUrl = String(entityArt.templateValues?.ThumbnailUrl || '');
                 if (activeNav === 'worlds') {
                   const canonicalWorldId = worlds[0]?.id || entityArt.id;
@@ -4784,6 +5141,10 @@ export default function App() {
                 }
               }}
               onDeleteEntity={(id) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 setArticles((prev) => prev.filter((a) => a.id !== id));
                 if (activeNav === 'worlds') {
                   setWorlds((prev) => prev.filter((w) => w.id !== id));
@@ -4803,6 +5164,7 @@ export default function App() {
                 </span>
                 <button
                   type="button"
+                  data-allow-viewer="true"
                   onClick={() => setShowStoryAdvancedWiki(false)}
                   className="px-4 py-1.5 rounded-full bg-[#6d7696] hover:bg-[#5d6685] border border-[#879fd0] text-white font-serif font-semibold text-xs"
                 >
@@ -4824,23 +5186,41 @@ export default function App() {
                   }
                 }}
                 onSaveArticle={async (updated) => {
+                  if (isReadOnlyViewer) {
+                    notifyViewerReadOnly();
+                    return;
+                  }
                   setArticles((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
                   recordEditedItem(updated.id, updated.title, 'Article', 'articles');
                 }}
                 onCreateArticle={async (newArt) => {
+                  if (isReadOnlyViewer) {
+                    notifyViewerReadOnly();
+                    return;
+                  }
                   const targetW = ensureActiveWorldForQuickCreate();
                   const artWithWorld = { ...newArt, worldId: targetW.id };
                   setArticles((prev) => [artWithWorld, ...prev]);
                   recordEditedItem(artWithWorld.id, artWithWorld.title, 'Article', 'articles');
                 }}
-                onDeleteArticle={(id) => setArticles((prev) => prev.filter((a) => a.id !== id))}
-                onSaveTemplate={(tpl) =>
+                onDeleteArticle={(id) => {
+                  if (isReadOnlyViewer) {
+                    notifyViewerReadOnly();
+                    return;
+                  }
+                  setArticles((prev) => prev.filter((a) => a.id !== id));
+                }}
+                onSaveTemplate={(tpl) => {
+                  if (isReadOnlyViewer) {
+                    notifyViewerReadOnly();
+                    return;
+                  }
                   setTemplates((prev) =>
                     prev.some((t) => t.id === tpl.id)
                       ? prev.map((t) => (t.id === tpl.id ? tpl : t))
                       : [...prev, tpl]
-                  )
-                }
+                  );
+                }}
               />
             </div>
           )}
@@ -4854,6 +5234,10 @@ export default function App() {
               maps={maps}
               articles={articles}
               onUpdateMap={(updatedMap) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 setMaps((prev) =>
                   prev.some((m) => m.id === updatedMap.id)
                     ? prev.map((m) => (m.id === updatedMap.id ? updatedMap : m))
@@ -4862,6 +5246,10 @@ export default function App() {
                 recordEditedItem(updatedMap.id, updatedMap.name, 'Map', 'maps');
               }}
               onCreateMap={(newMap) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 const targetW = ensureActiveWorldForQuickCreate();
                 const mapWithWorld: WorldMap = { ...newMap, worldId: targetW.id };
                 setMaps((prev) => [mapWithWorld, ...prev]);
@@ -4869,6 +5257,10 @@ export default function App() {
                 recordEditedItem(mapWithWorld.id, mapWithWorld.name, 'Map', 'maps');
               }}
               onDeleteMap={(mapId) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 setMaps((prev) => prev.filter((m) => m.id !== mapId));
               }}
               onStartZoomTransition={() => {
@@ -4907,6 +5299,33 @@ export default function App() {
                     a.title.toLowerCase() === locationTitle.trim().toLowerCase()
                 );
                 if (existing) return existing;
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return (
+                    articles[0] || {
+                      id: 'readonly-loc',
+                      worldId: targetW.id,
+                      title: locationTitle,
+                      aliases: [],
+                      category: 'Locations',
+                      templateType: 'Location - Settlement / City',
+                      tags: [],
+                      summary: '',
+                      content: '',
+                      secretNotes: '',
+                      spoilerWarning: '',
+                      templateValues: {},
+                      status: 'draft',
+                      visibility: 'public',
+                      linkedEntityIds: [],
+                      galleryCaptions: [],
+                      versions: [],
+                      comments: [],
+                      wordCount: 0,
+                      updatedAt: ''
+                    }
+                  );
+                }
 
                 const newLocArt: Article = {
                   id: `art-loc-${Date.now()}`,
@@ -4992,6 +5411,34 @@ export default function App() {
                       a.tags.includes('Event')) &&
                       a.title.toLowerCase() === title.trim().toLowerCase())
                 );
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return (
+                    existing ||
+                    articles[0] || {
+                      id: id || 'readonly-event',
+                      worldId: resolvedWorldId,
+                      title,
+                      aliases: [],
+                      templateType: 'Event / Historical Milestone',
+                      category: 'Events',
+                      tags: [],
+                      summary: '',
+                      content: '',
+                      secretNotes: '',
+                      spoilerWarning: '',
+                      templateValues: {},
+                      status: 'published',
+                      visibility: 'private',
+                      linkedEntityIds: [],
+                      galleryCaptions: [],
+                      versions: [],
+                      comments: [],
+                      wordCount: 0,
+                      updatedAt: ''
+                    }
+                  );
+                }
                 if (existing) {
                   const updated: Article = {
                     ...existing,
@@ -5117,6 +5564,34 @@ export default function App() {
                     (a.category === tabMeta.articleCategory &&
                       a.title.toLowerCase() === title.trim().toLowerCase())
                 );
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return (
+                    existing ||
+                    articles[0] || {
+                      id: id || 'readonly-tag',
+                      worldId: resolvedWorldId,
+                      title,
+                      aliases: [],
+                      templateType: tabMeta.templateType,
+                      category: tabMeta.articleCategory,
+                      tags: [],
+                      summary: '',
+                      content: '',
+                      secretNotes: '',
+                      spoilerWarning: '',
+                      templateValues: {},
+                      status: 'published',
+                      visibility: 'private',
+                      linkedEntityIds: [],
+                      galleryCaptions: [],
+                      versions: [],
+                      comments: [],
+                      wordCount: 0,
+                      updatedAt: ''
+                    }
+                  );
+                }
                 if (existing) {
                   const updated: Article = {
                     ...existing,
@@ -5198,15 +5673,29 @@ export default function App() {
               activeWorld={activeWorld}
               articles={worldArticles}
               assets={digitalAssets}
-              onAddAsset={(ast) => setDigitalAssets((prev) => [ast, ...prev])}
-              onDeleteAsset={(id) =>
-                setDigitalAssets((prev) => prev.filter((a) => a.id !== id))
-              }
+              onAddAsset={(ast) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
+                setDigitalAssets((prev) => [ast, ...prev]);
+              }}
+              onDeleteAsset={(id) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
+                setDigitalAssets((prev) => prev.filter((a) => a.id !== id));
+              }}
               onSelectArticle={(id) => {
                 setSelectedArticleId(id);
                 setActiveNav('articles');
               }}
               onSetWorldThumbnail={(dataUrl) => {
+                if (isReadOnlyViewer) {
+                  notifyViewerReadOnly();
+                  return;
+                }
                 if (!activeWorld) return;
                 setWorlds((prev) =>
                   prev.map((w) =>
