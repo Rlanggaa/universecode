@@ -3,6 +3,14 @@
  */
 
 export const CLOUD_ACCOUNT_SESSION_KEY = 'alt_universe_cloud_account_session_v1';
+export const SHARED_WORLD_LINK_SESSION_KEY = 'alt_universe_shared_world_link_v1';
+
+export interface SharedWorldLinkSession {
+  vaultKey: string;
+  passwordToken: string;
+  accessMode: 'editor' | 'viewer';
+  ownerName: string;
+}
 
 export interface CloudUserProfile {
   displayName: string;
@@ -29,10 +37,11 @@ export interface CloudAccountSession {
   bio?: string;
   avatarUrl?: string;
   authMethod: 'supabase-account' | 'google';
-  // Optional: Join another owner's World Vault using separate personal account
+  // Optional: Join another owner's World Vault via Canva-style Share Link
   joinedWorldVaultId?: string;
   joinedWorldPin?: string;
   joinedWorldOwnerName?: string;
+  joinedWorldAccessMode?: 'editor' | 'viewer';
 }
 
 export interface SupabaseConnectionConfig {

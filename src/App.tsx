@@ -44,7 +44,10 @@ import {
   Undo2,
   Redo2,
   Sun,
-  Moon
+  Moon,
+  Share2,
+  Link2,
+  Copy
 } from 'lucide-react';
 import {
   INITIAL_WORKSPACE,
@@ -129,6 +132,8 @@ import {
   deriveEmailLookupId,
   hasWorkspaceBundleContent,
   CLOUD_ACCOUNT_SESSION_KEY,
+  SHARED_WORLD_LINK_SESSION_KEY,
+  SharedWorldLinkSession,
   CloudAccountSession,
   CloudWorkspaceBundle,
   CloudTeamMember,
@@ -253,7 +258,7 @@ export default function App() {
   const [profileAvatarUrl, setProfileAvatarUrl] = useState<string>('');
   const profileAvatarInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Real-time Multi-User Collaboration & Role Permissions (Owner / Editor / Viewer)
+  // Real-time Multi-User Collaboration & Canva-style Share World Link (Owner / Editor / Viewer)
   const clientSessionIdRef = useRef<string>(
     `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   );
@@ -261,9 +266,40 @@ export default function App() {
   const [teamMembers, setTeamMembers] = useState<CloudTeamMember[]>([]);
   const [newMemberEmailInput, setNewMemberEmailInput] = useState<string>('');
   const [newMemberRoleInput, setNewMemberRoleInput] = useState<TeamRolePermission>('editor');
-  const [joinOwnerEmailInput, setJoinOwnerEmailInput] = useState<string>('');
-  const [joinOwnerPinInput, setJoinOwnerPinInput] = useState<string>('');
   const [liveCollaboratorNotice, setLiveCollaboratorNotice] = useState<string>('');
+  const [shareLinkAccessMode, setShareLinkAccessMode] = useState<'editor' | 'viewer'>('editor');
+  const [shareLinkCopied, setShareLinkCopied] = useState<boolean>(false);
+
+  // Detect Canva-style Shared World Link (?world=...&token=...&access=editor|viewer&owner=...)
+  const [sharedWorldLink, setSharedWorldLink] = useState<SharedWorldLinkSession | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const worldVault = params.get('world')?.trim();
+      const token = params.get('token')?.trim();
+      if (worldVault && token) {
+        const access = params.get('access') === 'viewer' ? 'viewer' : 'editor';
+        const owner = params.get('owner')?.trim() || 'Pemilik World';
+        const linkSession: SharedWorldLinkSession = {
+          vaultKey: worldVault,
+          passwordToken: token,
+          accessMode: access,
+          ownerName: owner
+        };
+        localStorage.setItem(SHARED_WORLD_LINK_SESSION_KEY, JSON.stringify(linkSession));
+        return linkSession;
+      }
+      const savedLink = localStorage.getItem(SHARED_WORLD_LINK_SESSION_KEY);
+      if (savedLink) {
+        const parsed = JSON.parse(savedLink) as SharedWorldLinkSession;
+        if (parsed && parsed.vaultKey && parsed.passwordToken) {
+          return parsed;
+        }
+      }
+    } catch {
+      // ignore URL or storage errors
+    }
+    return null;
+  });
 
   const activeAccount: CloudAccountSession | null = useMemo(() => {
     if (cloudAccount) return cloudAccount;
@@ -394,13 +430,14 @@ export default function App() {
   const [showQuickCreateMenu, setShowQuickCreateMenu] = useState<boolean>(false);
   const [completedTutorials, setCompletedTutorials] = useState<string[]>([]);
 
-  // Sync activeNav to localStorage and URL history so refreshing or opening direct URLs works seamlessly
+  // Sync activeNav to localStorage and URL history (preserving ?world=... share link query parameters)
   useEffect(() => {
     try {
       localStorage.setItem('alt_universe_active_nav_v1', activeNav);
       const targetPath = activeNav === 'dashboard' ? '/' : `/${activeNav}`;
+      const currentSearch = window.location.search || '';
       if (window.location.pathname !== targetPath) {
-        window.history.replaceState({ nav: activeNav }, '', targetPath);
+        window.history.replaceState({ nav: activeNav }, '', `${targetPath}${currentSearch}`);
       }
     } catch {
       // Ignore history/storage errors in restricted iframe contexts
@@ -1056,37 +1093,92 @@ export default function App() {
     return account.uid;
   };
 
-  // Resolve target vault (either the user's own Cloud Vault OR a joined shared Team World Vault)
+  // Resolve target vault (either the user's own Cloud Vault OR a Canva-style Shared World Link)
   const resolveTargetVaultCredentials = async (
-    account: CloudAccountSession
+    account?: CloudAccountSession | null
   ): Promise<{ vaultKey: string; passwordToken: string; isJoinedSharedWorld: boolean }> => {
-    if (account.joinedWorldVaultId && account.joinedWorldPin) {
+    const ownKey = account ? await resolveEmailLookupKey(account) : '';
+
+    // 1. Check active Canva-style Shared World Link first (unless the logged-in user IS the owner of that vault)
+    if (
+      sharedWorldLink &&
+      sharedWorldLink.vaultKey &&
+      sharedWorldLink.passwordToken &&
+      sharedWorldLink.vaultKey !== ownKey
+    ) {
+      return {
+        vaultKey: sharedWorldLink.vaultKey,
+        passwordToken: sharedWorldLink.passwordToken,
+        isJoinedSharedWorld: true
+      };
+    }
+
+    // 2. Check account's saved joinedWorldVaultId
+    if (
+      account?.joinedWorldVaultId &&
+      account?.joinedWorldPin &&
+      account.joinedWorldVaultId !== ownKey
+    ) {
       return {
         vaultKey: account.joinedWorldVaultId,
         passwordToken: account.joinedWorldPin,
         isJoinedSharedWorld: true
       };
     }
-    const ownKey = await resolveEmailLookupKey(account);
+
+    // 3. Otherwise use the user's own personal Cloud Vault
     return {
       vaultKey: ownKey,
-      passwordToken: account.uid,
+      passwordToken: account?.uid || '',
       isJoinedSharedWorld: false
     };
   };
 
+  // Determine whether the workspace is currently connected to someone else's Shared World Link
+  const activeSharedWorldInfo = useMemo(() => {
+    if (sharedWorldLink && sharedWorldLink.vaultKey) {
+      if (
+        activeAccount?.emailLookupId &&
+        activeAccount.emailLookupId === sharedWorldLink.vaultKey
+      ) {
+        return null;
+      }
+      return {
+        vaultKey: sharedWorldLink.vaultKey,
+        passwordToken: sharedWorldLink.passwordToken,
+        ownerName: sharedWorldLink.ownerName || 'Pemilik World',
+        accessMode: sharedWorldLink.accessMode || 'editor'
+      };
+    }
+    if (activeAccount?.joinedWorldVaultId && activeAccount?.joinedWorldPin) {
+      if (
+        activeAccount.emailLookupId &&
+        activeAccount.emailLookupId === activeAccount.joinedWorldVaultId
+      ) {
+        return null;
+      }
+      return {
+        vaultKey: activeAccount.joinedWorldVaultId,
+        passwordToken: activeAccount.joinedWorldPin,
+        ownerName: activeAccount.joinedWorldOwnerName || 'Pemilik World',
+        accessMode: activeAccount.joinedWorldAccessMode || 'editor'
+      };
+    }
+    return null;
+  }, [sharedWorldLink, activeAccount]);
+
   // Determine the current user's effective role in the active World ('owner' | 'editor' | 'viewer')
   const currentUserTeamRole: TeamRolePermission = useMemo(() => {
-    if (!activeAccount) return 'owner';
-    if (!activeAccount.joinedWorldVaultId) return 'owner';
-    const myEmail = (activeAccount.email || '').trim().toLowerCase();
-    const matchedMember = teamMembers.find(
-      (m) => m.email.trim().toLowerCase() === myEmail
-    );
-    if (matchedMember) return matchedMember.role;
-    // If Owner hasn't restricted the list yet or gave the PIN directly, default to 'editor'
-    return 'editor';
-  }, [activeAccount, teamMembers]);
+    if (!activeSharedWorldInfo) return 'owner';
+    if (activeAccount?.email) {
+      const myEmail = activeAccount.email.trim().toLowerCase();
+      const matchedMember = teamMembers.find(
+        (m) => m.email.trim().toLowerCase() === myEmail
+      );
+      if (matchedMember) return matchedMember.role;
+    }
+    return activeSharedWorldInfo.accessMode === 'viewer' ? 'viewer' : 'editor';
+  }, [activeSharedWorldInfo, activeAccount, teamMembers]);
 
   const syncAccountWorkspaceOnLogin = async (
     account: CloudAccountSession,
@@ -1164,19 +1256,53 @@ export default function App() {
       }
 
       const cloudProfile = cloudBundle?.userProfile;
+      const isJoiningViaShareLink = Boolean(
+        sharedWorldLink &&
+          sharedWorldLink.vaultKey &&
+          sharedWorldLink.vaultKey !== emailLookupKey
+      );
       const updatedSession: CloudAccountSession = {
         ...account,
         emailLookupId: emailLookupKey,
         displayName: cloudProfile?.displayName || resolvedDisplayName,
         roleTitle: cloudProfile?.roleTitle || account.roleTitle || 'Worldbuilder & Storyteller',
         bio: cloudProfile?.bio || account.bio || '',
-        avatarUrl: cloudProfile?.avatarUrl || account.avatarUrl || ''
+        avatarUrl: cloudProfile?.avatarUrl || account.avatarUrl || '',
+        joinedWorldVaultId: isJoiningViaShareLink
+          ? sharedWorldLink?.vaultKey
+          : account.joinedWorldVaultId,
+        joinedWorldPin: isJoiningViaShareLink
+          ? sharedWorldLink?.passwordToken
+          : account.joinedWorldPin,
+        joinedWorldOwnerName: isJoiningViaShareLink
+          ? sharedWorldLink?.ownerName
+          : account.joinedWorldOwnerName,
+        joinedWorldAccessMode: isJoiningViaShareLink
+          ? sharedWorldLink?.accessMode
+          : account.joinedWorldAccessMode
       };
       setCloudAccount(updatedSession);
       try {
         localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(updatedSession));
       } catch {
         // ignore
+      }
+
+      // If the user opened a Canva-style Share Link (?world=...&token=...) and then logged into their own personal account,
+      // keep the shared World loaded in their workspace while using their personal profile identity!
+      if (isJoiningViaShareLink && sharedWorldLink) {
+        const sharedRes = await loadCloudAccountVaultFromFirestore(
+          sharedWorldLink.vaultKey,
+          sharedWorldLink.passwordToken
+        );
+        if (sharedRes.status === 'ok' && sharedRes.bundle) {
+          hydrateFromCloudBundle(sharedRes.bundle, true);
+        }
+        setBackupStatus('Live Team World Synced');
+        setAuthStatusMessage(
+          `Berhasil masuk sebagai ${updatedSession.displayName}! Anda kini berkolaborasi secara Real-Time di World milik "${sharedWorldLink.ownerName}".`
+        );
+        return true;
       }
 
       const cloudHasContent = hasWorkspaceBundleContent(cloudBundle);
@@ -1369,17 +1495,61 @@ export default function App() {
     };
   }, []);
 
+  // INITIAL LOAD FOR CANVA-STYLE SHARE WORLD LINK:
+  // When a team member opens a shared link (?world=...&token=...), immediately load the Owner's World from Cloud
+  useEffect(() => {
+    if (!sharedWorldLink?.vaultKey || !sharedWorldLink?.passwordToken) return;
+    let isCancelled = false;
+
+    const loadSharedWorldFromLink = async () => {
+      // Check if the currently logged-in user IS the owner of this link
+      if (activeAccount) {
+        const ownKey = await resolveEmailLookupKey(activeAccount);
+        if (ownKey === sharedWorldLink.vaultKey) {
+          return;
+        }
+      }
+      setIsSyncingCloud(true);
+      try {
+        const vaultRes = await loadCloudAccountVaultFromFirestore(
+          sharedWorldLink.vaultKey,
+          sharedWorldLink.passwordToken
+        );
+        if (isCancelled) return;
+        if (vaultRes.status === 'ok' && vaultRes.bundle) {
+          hydrateFromCloudBundle(vaultRes.bundle, true);
+          const ownerLabel =
+            vaultRes.displayName || sharedWorldLink.ownerName || 'Pemilik World';
+          setBackupStatus(`Live Team World (${ownerLabel})`);
+          setLiveCollaboratorNotice(
+            `Terhubung ke link World milik ${ownerLabel} (${
+              sharedWorldLink.accessMode === 'viewer' ? 'Hanya Lihat' : 'Bisa Edit Real-Time'
+            })`
+          );
+        }
+      } finally {
+        if (!isCancelled) setIsSyncingCloud(false);
+      }
+    };
+
+    loadSharedWorldFromLink();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [sharedWorldLink?.vaultKey, sharedWorldLink?.passwordToken]);
+
   // REAL-TIME LISTENER (Firestore onSnapshot):
   // Immediately receives & applies edits made by team members on other browsers/devices in < 1 second
   useEffect(() => {
-    if (!activeAccount) return;
+    if (!activeAccount && !sharedWorldLink) return;
     let unsubVault: (() => void) | null = null;
     let isCancelled = false;
 
     const attachRealtimeListener = async () => {
       const { vaultKey, passwordToken, isJoinedSharedWorld } =
         await resolveTargetVaultCredentials(activeAccount);
-      if (isCancelled) return;
+      if (isCancelled || !vaultKey || !passwordToken) return;
 
       unsubVault = subscribeCloudAccountVault(
         vaultKey,
@@ -1422,12 +1592,16 @@ export default function App() {
     activeAccount?.uid,
     activeAccount?.emailLookupId,
     activeAccount?.joinedWorldVaultId,
-    activeAccount?.joinedWorldPin
+    activeAccount?.joinedWorldPin,
+    sharedWorldLink?.vaultKey,
+    sharedWorldLink?.passwordToken
   ]);
 
-  // Automatically sync workspace changes to Cloud (CloudAccountVault + Supabase + Firestore) whenever logged-in user edits data
+  // Automatically sync workspace changes to Cloud (CloudAccountVault + Supabase + Firestore) whenever Owner or Team Editor edits data
   useEffect(() => {
-    if (!activeAccount || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) return;
+    if ((!activeAccount && !sharedWorldLink) || !isInitialLoadDoneRef.current || isHydratingCloudRef.current) {
+      return;
+    }
     // If joined as Viewer (read-only), do not overwrite the shared Cloud Vault
     if (currentUserTeamRole === 'viewer') return;
 
@@ -1438,13 +1612,16 @@ export default function App() {
 
       const { vaultKey, passwordToken, isJoinedSharedWorld } =
         await resolveTargetVaultCredentials(activeAccount);
+      if (!vaultKey || !passwordToken) return;
+
+      const ownerOrEditorDisplayName = isJoinedSharedWorld
+        ? activeSharedWorldInfo?.ownerName || activeAccount?.displayName || 'Shared World'
+        : activeAccount?.displayName || 'Creator';
 
       const vaultRes = await saveCloudAccountVaultToFirestore(
         vaultKey,
         passwordToken,
-        isJoinedSharedWorld
-          ? activeAccount.joinedWorldOwnerName || activeAccount.displayName
-          : activeAccount.displayName,
+        ownerOrEditorDisplayName,
         bundle
       );
       if (vaultRes.ok) {
@@ -1454,7 +1631,7 @@ export default function App() {
       }
 
       if (isSupabaseConfigured()) {
-        await saveWorkspaceBundleToSupabase(vaultKey, activeAccount.email, bundle);
+        await saveWorkspaceBundleToSupabase(vaultKey, activeAccount?.email || '', bundle);
       }
       if (currentUser && !isJoinedSharedWorld) {
         await saveWorkspaceBundleToFirestore(currentUser, bundle);
@@ -1464,6 +1641,8 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [
     activeAccount,
+    sharedWorldLink,
+    activeSharedWorldInfo,
     currentUser,
     currentUserTeamRole,
     worlds,
@@ -1702,14 +1881,14 @@ export default function App() {
     );
   };
 
-  // Team Member: Join an Owner's Shared World using their own separate personal account!
-  const handleJoinSharedTeamWorld = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeAccount) return;
-    const ownerEmail = joinOwnerEmailInput.trim().toLowerCase();
-    const ownerPin = joinOwnerPinInput.trim();
-    if (!ownerEmail || !ownerPin) {
-      setAuthErrorMessage('Masukkan Email/Username Pemilik World dan Password/PIN Kolaborasi.');
+  // Owner: Copy Canva-style Share World Link ("Salin Link Desain World")
+  const handleCopyShareWorldLink = async () => {
+    if (!activeAccount) {
+      setAuthModalMode('login');
+      setShowAuthModal(true);
+      setAuthErrorMessage(
+        'Silakan masuk ke akun Anda terlebih dahulu agar dapat membagikan Link Desain World ke tim.'
+      );
       return;
     }
 
@@ -1717,62 +1896,81 @@ export default function App() {
     setAuthErrorMessage('');
     setAuthStatusMessage('');
     try {
-      const targetVaultKey = await deriveEmailLookupId(ownerEmail);
-      const targetPinToken = await deriveCloudAccountId(ownerEmail, ownerPin);
+      const { vaultKey, passwordToken } = await resolveTargetVaultCredentials(activeAccount);
+      const ownerName =
+        activeSharedWorldInfo?.ownerName ||
+        activeAccount.displayName ||
+        (activeAccount.email.includes('@')
+          ? activeAccount.email.split('@')[0]
+          : activeAccount.email);
 
-      const vaultRes = await loadCloudAccountVaultFromFirestore(
-        targetVaultKey,
-        targetPinToken
-      );
-      if (vaultRes.status === 'not_found') {
-        setAuthErrorMessage(
-          `World milik "${ownerEmail}" tidak ditemukan di Cloud. Pastikan Pemilik World sudah mendaftar.`
-        );
-        return;
-      }
-      if (vaultRes.status === 'wrong_password') {
-        setAuthErrorMessage(
-          'Password / PIN Kolaborasi World tidak sesuai dengan milik Pemilik World.'
-        );
-        return;
+      // Push latest workspace state to Cloud immediately so anyone opening the link sees the latest design
+      if (currentUserTeamRole !== 'viewer') {
+        const bundle = buildCurrentWorkspaceBundle(activeAccount);
+        lastSavedOrReceivedIsoRef.current = bundle.updatedAtIso;
+        await saveCloudAccountVaultToFirestore(vaultKey, passwordToken, ownerName, bundle);
       }
 
-      const updatedSession: CloudAccountSession = {
-        ...activeAccount,
-        joinedWorldVaultId: targetVaultKey,
-        joinedWorldPin: targetPinToken,
-        joinedWorldOwnerName: vaultRes.displayName || ownerEmail
-      };
-      setCloudAccount(updatedSession);
+      const shareUrl = `${window.location.origin}/?world=${encodeURIComponent(
+        vaultKey
+      )}&token=${encodeURIComponent(
+        passwordToken
+      )}&access=${shareLinkAccessMode}&owner=${encodeURIComponent(ownerName)}`;
+
       try {
-        localStorage.setItem(CLOUD_ACCOUNT_SESSION_KEY, JSON.stringify(updatedSession));
+        await navigator.clipboard.writeText(shareUrl);
       } catch {
-        // ignore
+        const tempInput = document.createElement('textarea');
+        tempInput.value = shareUrl;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand('copy');
+        document.body.removeChild(tempInput);
       }
 
-      if (vaultRes.bundle) {
-        hydrateFromCloudBundle(vaultRes.bundle, true);
-      }
-      setJoinOwnerPinInput('');
-      setBackupStatus('Live Team World Synced');
+      setShareLinkCopied(true);
+      setHistoryToastText('Link World Disalin!');
+      window.setTimeout(() => {
+        setShareLinkCopied(false);
+        setHistoryToastText('');
+      }, 3200);
+
       setAuthStatusMessage(
-        `Berhasil terhubung secara Real-Time ke World milik "${
-          vaultRes.displayName || ownerEmail
-        }" menggunakan akun pribadi Anda (${activeAccount.displayName})!`
+        `Link desain World (${
+          shareLinkAccessMode === 'editor'
+            ? 'Siapa saja dengan link: Bisa Edit Real-Time'
+            : 'Siapa saja dengan link: Hanya Lihat'
+        }) berhasil disalin! Kirimkan link tersebut ke tim Anda.`
       );
     } finally {
       setIsSyncingCloud(false);
     }
   };
 
-  // Team Member: Leave shared world and return to their own personal workspace
+  // Team Member: Leave shared world link and return to their own personal workspace
   const handleLeaveSharedTeamWorld = async () => {
-    if (!activeAccount) return;
+    setSharedWorldLink(null);
+    setLiveCollaboratorNotice('');
+    try {
+      localStorage.removeItem(SHARED_WORLD_LINK_SESSION_KEY);
+      const targetPath = activeNav === 'dashboard' ? '/' : `/${activeNav}`;
+      window.history.replaceState({ nav: activeNav }, '', targetPath);
+    } catch {
+      // ignore
+    }
+
+    if (!activeAccount) {
+      hydrateFromCloudBundle(createEmptyWorkspaceBundle());
+      setBackupStatus('Local-first Auto-Saved');
+      return;
+    }
+
     const updatedSession: CloudAccountSession = {
       ...activeAccount,
       joinedWorldVaultId: undefined,
       joinedWorldPin: undefined,
-      joinedWorldOwnerName: undefined
+      joinedWorldOwnerName: undefined,
+      joinedWorldAccessMode: undefined
     };
     setCloudAccount(updatedSession);
     try {
@@ -1781,7 +1979,7 @@ export default function App() {
       // ignore
     }
     await syncAccountWorkspaceOnLogin(updatedSession, currentUser, true, 'session-restore');
-    setAuthStatusMessage('Anda telah kembali ke Workspace Pribadi Anda.');
+    setAuthStatusMessage('Anda telah keluar dari link World bersama dan kembali ke Workspace Pribadi Anda.');
   };
 
   const handleManualCloudPush = async () => {
@@ -3233,6 +3431,31 @@ export default function App() {
 
             <span className="h-5 w-px bg-[#d5dced]" />
 
+            {/* Canva-Style "Bagikan (Share Link)" Button in Header */}
+            <button
+              type="button"
+              onClick={() => {
+                setAuthErrorMessage('');
+                setAuthStatusMessage('');
+                setShowAuthModal(true);
+              }}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition shadow-2xs cursor-pointer ${
+                activeSharedWorldInfo
+                  ? 'bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800'
+                  : 'bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-[#181b26]'
+              }`}
+              title={
+                activeSharedWorldInfo
+                  ? `Terhubung ke Link World: ${activeSharedWorldInfo.ownerName}`
+                  : 'Bagikan Link Desain World ke Tim (Seperti Canva)'
+              }
+            >
+              <Share2 className="w-3.5 h-3.5 text-[#6d7696]" />
+              <span className="hidden sm:inline">
+                {activeSharedWorldInfo ? 'Tim Live' : 'Bagikan'}
+              </span>
+            </button>
+
             {/* User Profile Avatar & Account Controls */}
             {activeAccount ? (
               <button
@@ -3243,7 +3466,7 @@ export default function App() {
                   setShowAuthModal(true);
                 }}
                 className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-white hover:bg-[#eef1f8] border border-[#879fd0] text-xs text-[#181b26] transition shadow-2xs cursor-pointer"
-                title={`Profil: ${activeAccount.displayName} (${activeAccount.email}) — Klik untuk Personalisasi Profil & Cloud Sync`}
+                title={`Profil: ${activeAccount.displayName} (${activeAccount.email}) — Klik untuk Personalisasi Profil & Bagikan Link World`}
               >
                 {activeAccount.avatarUrl ? (
                   <img
@@ -5018,12 +5241,13 @@ export default function App() {
                   </div>
 
                   {/* ========================================================== */}
-                  {/* KOLABORASI TIM MULTI-AKUN & IZIN ROLE (OWNER/EDITOR/VIEWER)*/}
+                  {/* CANVA-STYLE SHARE WORLD LINK ("BAGIKAN LINK DESAIN WORLD") */}
                   {/* ========================================================== */}
                   <div className="p-4 rounded-2xl bg-[#f8f9fc] border border-[#cbd3e6] space-y-3">
                     <div className="flex items-center justify-between">
-                      <div className="text-xs font-bold text-[#181b26]">
-                        Kolaborasi Tim Real-Time (Beda Akun, Satu World)
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-[#181b26]">
+                        <Link2 className="w-4 h-4 text-[#6d7696]" />
+                        <span>Bagikan Link Desain World (Canva Share)</span>
                       </div>
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -5044,38 +5268,100 @@ export default function App() {
                       </div>
                     )}
 
-                    {activeAccount.joinedWorldVaultId ? (
+                    {activeSharedWorldInfo ? (
                       <div className="space-y-2.5">
                         <div className="p-3 rounded-xl bg-white border border-[#dce3f2] text-xs space-y-1">
                           <div className="font-semibold text-[#181b26]">
-                            Terhubung ke World Tim:{' '}
+                            Sedang Mengakses Link World:{' '}
                             <span className="text-[#6d7696]">
-                              {activeAccount.joinedWorldOwnerName || 'Shared World'}
+                              {activeSharedWorldInfo.ownerName}
                             </span>
                           </div>
-                          <div className="text-[11px] text-[#52586e]">
-                            Anda masuk menggunakan akun pribadi <strong>{activeAccount.displayName}</strong> dengan hak akses{' '}
+                          <div className="text-[11px] text-[#52586e] leading-relaxed">
+                            Anda terhubung melalui Link Kolaborasi dengan profil pribadi{' '}
+                            <strong>{activeAccount.displayName}</strong> sebagai{' '}
                             <strong>
                               {currentUserTeamRole === 'editor'
                                 ? 'Editor (Dapat menulis & mengedit secara real-time)'
-                                : 'Viewer (Hanya baca)'}
+                                : 'Viewer (Hanya lihat)'}
                             </strong>.
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={handleLeaveSharedTeamWorld}
-                          className="w-full py-2 rounded-xl border border-[#879fd0] bg-white hover:bg-[#eef1f8] text-[#181b26] text-xs font-semibold transition cursor-pointer"
-                        >
-                          Kembali ke Workspace Pribadi Saya
-                        </button>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={handleCopyShareWorldLink}
+                            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold transition cursor-pointer"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>{shareLinkCopied ? 'Link Tersalin!' : 'Salin Link World'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleLeaveSharedTeamWorld}
+                            className="flex-1 py-2 rounded-xl border border-[#879fd0] bg-white hover:bg-[#eef1f8] text-[#181b26] text-xs font-semibold transition cursor-pointer"
+                          >
+                            Kembali ke World Pribadi
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {/* Section A: Manage Team Permissions on My World (Owner) */}
-                        <form onSubmit={handleAddTeamMemberPermission} className="space-y-2">
+                        <p className="text-[11px] text-[#52586e] leading-relaxed">
+                          Salin link desain World Anda dan kirimkan ke anggota tim. Siapa pun yang membuka link tersebut akan langsung melihat dan mengedit World ini secara <strong>Real-Time</strong>.
+                        </p>
+
+                        {/* Access level selector (like Canva's "Anyone with the link -> Can edit / Can view") */}
+                        <div className="space-y-1.5">
                           <label className="block text-[11px] font-semibold text-[#52586e]">
-                            1. Atur Izin Anggota Tim di World Anda (Sebagai Owner):
+                            Izin Akses Tautan (Link Access):
+                          </label>
+                          <select
+                            value={shareLinkAccessMode}
+                            onChange={(e) =>
+                              setShareLinkAccessMode(e.target.value as 'editor' | 'viewer')
+                            }
+                            className="w-full px-3 py-2 rounded-xl border border-[#cbd3e6] bg-white text-xs font-semibold text-[#181b26] focus:outline-none focus:border-[#6d7696]"
+                          >
+                            <option value="editor">
+                              Siapa saja yang memiliki link — Bisa Edit (Editor)
+                            </option>
+                            <option value="viewer">
+                              Siapa saja yang memiliki link — Hanya Lihat (Viewer)
+                            </option>
+                          </select>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={isSyncingCloud}
+                          onClick={handleCopyShareWorldLink}
+                          className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer ${
+                            shareLinkCopied
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-[#6d7696] hover:bg-[#5c6584] text-white'
+                          }`}
+                        >
+                          {shareLinkCopied ? (
+                            <>
+                              <Check className="w-4 h-4" />
+                              <span>Link World Berhasil Disalin!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-4 h-4" />
+                              <span>Salin Link Desain World</span>
+                            </>
+                          )}
+                        </button>
+
+                        {/* Optional: Per-email role override */}
+                        <form
+                          onSubmit={handleAddTeamMemberPermission}
+                          className="pt-2.5 border-t border-[#dce3f2] space-y-2"
+                        >
+                          <label className="block text-[11px] font-semibold text-[#52586e]">
+                            Atur Izin Khusus per Email Anggota Tim (Opsional):
                           </label>
                           <div className="flex gap-1.5">
                             <input
@@ -5097,7 +5383,7 @@ export default function App() {
                             </select>
                             <button
                               type="submit"
-                              className="px-3 py-1.5 rounded-xl bg-[#6d7696] hover:bg-[#5c6584] text-white text-xs font-bold shrink-0 cursor-pointer"
+                              className="px-3 py-1.5 rounded-xl bg-white hover:bg-[#eef1f8] border border-[#6d7696] text-[#181b26] text-xs font-bold shrink-0 cursor-pointer"
                             >
                               + Izin
                             </button>
@@ -5137,45 +5423,12 @@ export default function App() {
                             ))}
                           </div>
                         )}
-
-                        {/* Section B: Join Another Owner's Shared World */}
-                        <form
-                          onSubmit={handleJoinSharedTeamWorld}
-                          className="pt-2.5 border-t border-[#dce3f2] space-y-2"
-                        >
-                          <label className="block text-[11px] font-semibold text-[#52586e]">
-                            2. Atau Gabung ke World Tim Lain (Tetap Pakai Akun Pribadi Anda):
-                          </label>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                            <input
-                              type="text"
-                              value={joinOwnerEmailInput}
-                              onChange={(e) => setJoinOwnerEmailInput(e.target.value)}
-                              placeholder="Email/Username Owner"
-                              className="px-2.5 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
-                            />
-                            <input
-                              type="password"
-                              value={joinOwnerPinInput}
-                              onChange={(e) => setJoinOwnerPinInput(e.target.value)}
-                              placeholder="PIN / Password World"
-                              className="px-2.5 py-1.5 rounded-xl border border-[#cbd3e6] bg-white text-xs text-[#181b26] focus:outline-none focus:border-[#6d7696]"
-                            />
-                          </div>
-                          <button
-                            type="submit"
-                            disabled={isSyncingCloud}
-                            className="w-full py-1.5 rounded-xl bg-white hover:bg-[#eef1f8] border border-[#6d7696] text-[#181b26] text-xs font-bold transition cursor-pointer"
-                          >
-                            Hubungkan ke World Tim Secara Real-Time
-                          </button>
-                        </form>
                       </div>
                     )}
                   </div>
 
                   <p className="text-[11px] text-[#52586e] leading-relaxed">
-                    Seluruh perubahan World, Story, Karakter, dan Peta kini menggunakan <strong>Live Real-Time Listener (Firestore onSnapshot)</strong> sehingga otomatis muncul di layar rekan tim Anda dalam hitungan detik tanpa perlu refresh.
+                    Seluruh perubahan World, Story, Karakter, dan Peta disinkronkan secara <strong>Live Real-Time</strong> ke semua anggota tim yang membuka link desain World Anda.
                   </p>
 
                   <button
@@ -5188,6 +5441,27 @@ export default function App() {
                 </div>
               ) : (
                 <div className="space-y-4">
+                  {activeSharedWorldInfo && (
+                    <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs space-y-2">
+                      <div className="font-bold text-emerald-900 flex items-center justify-between">
+                        <span>Terhubung ke Link World: {activeSharedWorldInfo.ownerName}</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-200 text-emerald-900">
+                          {currentUserTeamRole.toUpperCase()}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-emerald-800 leading-relaxed">
+                        Anda sudah dapat langsung melihat {currentUserTeamRole === 'editor' ? 'dan mengedit ' : ''}World ini secara Real-Time! Masuk atau buat akun pribadi di bawah jika ingin menampilkan Nama & Foto Profil Anda saat mengedit.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleLeaveSharedTeamWorld}
+                        className="w-full py-1.5 rounded-xl bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 text-[11px] font-semibold transition cursor-pointer"
+                      >
+                        Keluar dari Link World Bersama
+                      </button>
+                    </div>
+                  )}
+
                   {/* Mode Switcher: Masuk (Log In) vs Buat Akun Baru */}
                   <div className="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[#eef1f8] border border-[#dce3f2]">
                     <button
